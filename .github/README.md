@@ -11,7 +11,9 @@
 
 ## 发布内容
 
-工作流先用 Bun 1.4.0 和 `web/bun.lock` 编译前端，再用 Go 1.26.1 将前端资源嵌入后端，并保留 Dockerfile 的 PGO、`CGO_ENABLED=0` 和 `GOEXPERIMENT=greenteagc` 配置。
+工作流只用 Bun 1.4.0 和 `web/bun.lock` 编译一次前端，各平台的 Go 1.26.1 构建共用这份前端资源，并保留 PGO、`CGO_ENABLED=0` 和 `GOEXPERIMENT=greenteagc` 配置。构建前先执行 `go mod download`，确保冷缓存环境下也能读取 moejs 的 `default.pgo`。
+
+六个平台各编译一次。Docker 任务直接下载 Linux amd64、arm64 的 Release 压缩包，提取其中已经嵌入前端的二进制，再通过 [docker/Dockerfile](docker/Dockerfile) 组装双架构镜像，无需再次编译前端或后端。镜像内的二进制与对应 Release 包一致。根目录 `Dockerfile` 继续用于本地从源码完整构建。
 
 | 系统 | 架构 | Release 资产 |
 | --- | --- | --- |

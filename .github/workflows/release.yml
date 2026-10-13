@@ -139,6 +139,9 @@ jobs:
             relaykit/go.sum
             tokenkit/go.sum
 
+      - name: Download Go modules
+        run: go mod download
+
       - name: Download embedded frontend
         uses: actions/download-artifact@v4
         with:
@@ -160,6 +163,7 @@ jobs:
 
           mkdir -p "build/$package" dist
           pgo="$(go list -m -f '{{.Dir}}' github.com/Calcium-Ion/moejs)/default.pgo"
+          test -s "$pgo"
           go build -trimpath -pgo="$pgo" \
             -ldflags="-s -w -X new-router/common.Version=$BUILD_VERSION" \
             -o "build/$package/$binary" .
@@ -181,7 +185,7 @@ jobs:
 
   docker:
     name: Publish GHCR image
-    needs: prepare
+    needs: [prepare, binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -190,6 +194,30 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v5
+
+      - name: Download Linux release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: new-router-linux-*
+          merge-multiple: true
+          path: build/docker-archives/
+
+      - name: Prepare Docker runtime files
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            package="new-router_${RELEASE_VERSION}_linux_${arch}"
+            mkdir -p "build/docker-context/$arch"
+            tar -xzf "build/docker-archives/$package.tar.gz" \
+              -C "build/docker-context/$arch" --strip-components=1
+            test -s "build/docker-context/$arch/new-router"
+          done
+          mkdir -p build/docker-context/licenses
+          cp build/docker-context/amd64/{LICENSE,NOTICE,THIRD-PARTY-LICENSES.md} \
+            build/docker-context/licenses/
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -219,8 +247,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
+          context: ./build/docker-context
+          file: ./.github/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.metadata.outputs.tags }}

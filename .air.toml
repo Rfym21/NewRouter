@@ -1,0 +1,30 @@
+root = "."
+# 独立产物目录:不可用 "tmp"，因 Windows 大小写不敏感会撞上仓库内已存在的 TMP/ 备份副本，
+# 叠加 clean_on_exit 会误删该副本。用点开头的专用目录彻底隔离。
+tmp_dir = ".air_tmp"
+
+[build]
+  # 编译入口在仓库根;dist 由前端 dev server 提供，后端 embed 的是构建期快照
+  cmd = "go build -o ./.air_tmp/main.exe ."
+  bin = "./.air_tmp/main.exe"
+  # 仅监听后端 Go 源码;前端源码由 rsbuild dev 独立热更新
+  include_ext = ["go"]
+  # 排除前端工作区、运行时产物、以及 TMP/ 备份副本(内含完整项目拷贝，绝不可监听/清理)
+  exclude_dir = [".air_tmp", "tmp", "TMP", "web", "node_modules", ".git", "logs", "data", "output", "vendor", "testdata"]
+  # 测试文件改动不重启服务
+  exclude_regex = ["_test\\.go"]
+  # 防抖：连续保存合并为一次重建
+  delay = 1000
+  stop_on_error = true
+  # Windows 无 SIGINT 语义，air 用 taskkill；留足时间让旧进程释放 3000 端口
+  send_interrupt = false
+  kill_delay = 2000
+  log = "build-errors.log"
+
+[misc]
+  # 退出时清理产物：目标已隔离为 .air_tmp，仅清 air 自身编译输出
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

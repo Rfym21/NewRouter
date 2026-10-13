@@ -1,0 +1,327 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { getRouteApi } from '@tanstack/react-router'
+import { Download } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
+
+import { Dialog } from '@/components/dialog'
+import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
+import { createLogExport } from '@/features/log-export/api'
+import type { CreateLogExportPayload } from '@/features/log-export/types'
+import { useIsAdmin } from '@/hooks/use-admin'
+import { useStatus } from '@/hooks/use-status'
+import { handleServerError } from '@/lib/handle-server-error'
+import { cn } from '@/lib/utils'
+
+const route = getRouteApi('/_authenticated/usage-logs/$section')
+
+// Column keys mirror the backend `logExportColumns`; admin-only columns are
+// dropped for non-admins to match `NormalizeLogExportColumns`.
+const COLUMN_DEFS: Array<{
+  key: string
+  labelKey: string
+  adminOnly?: boolean
+}> = [
+  { key: 'time', labelKey: 'Time' },
+  { key: 'channel', labelKey: 'Channel', adminOnly: true },
+  { key: 'username', labelKey: 'User', adminOnly: true },
+  { key: 'token', labelKey: 'Token' },
+  { key: 'group', labelKey: 'Group' },
+  { key: 'type', labelKey: 'Type' },
+  { key: 'model', labelKey: 'Model' },
+  { key: 'use_time', labelKey: 'Duration / First token' },
+  { key: 'prompt', labelKey: 'Input' },
+  { key: 'completion', labelKey: 'Output' },
+  { key: 'cost', labelKey: 'Cost' },
+  { key: 'retry', labelKey: 'Retry', adminOnly: true },
+  { key: 'ip', labelKey: 'IP' },
+  { key: 'details', labelKey: 'Details' },
+]
+
+const QUICK_RANGES: Array<{ labelKey: string; seconds: number }> = [
+  { labelKey: '24 hours', seconds: 24 * 3600 },
+  { labelKey: '7 days', seconds: 7 * 24 * 3600 },
+  { labelKey: '30 days', seconds: 30 * 24 * 3600 },
+]
+
+function pad(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/** Format a Date into a value accepted by <input type="datetime-local">. */
+function toLocalInput(date: Date): string {
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function toSeconds(value: string): number {
+  const ms = Date.parse(value)
+  return Number.isNaN(ms) ? 0 : Math.floor(ms / 1000)
+}
+
+interface LogExportDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
+  const { t } = useTranslation()
+  const isAdmin = useIsAdmin()
+  const searchParams = route.useSearch()
+  const { status } = useStatus()
+
+  const maxDays = useMemo(() => {
+    const raw = Number(
+      (status as unknown as { log_export_max_days?: number } | null)
+        ?.log_export_max_days
+    )
+    return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 30
+  }, [status])
+  const maxRangeSeconds = maxDays * 24 * 3600
+
+  const columns = useMemo(
+    () => COLUMN_DEFS.filter((c) => isAdmin || !c.adminOnly),
+    [isAdmin]
+  )
+
+  const [start, setStart] = useState(() =>
+    toLocalInput(new Date(Date.now() - 24 * 3600 * 1000))
+  )
+  const [end, setEnd] = useState(() => toLocalInput(new Date()))
+  const [selected, setSelected] = useState<string[]>(() =>
+    COLUMN_DEFS.filter((c) => !c.adminOnly).map((c) => c.key)
+  )
+  const [submitting, setSubmitting] = useState(false)
+
+  const allChecked =
+    columns.length > 0 && columns.every((c) => selected.includes(c.key))
+  const someChecked = columns.some((c) => selected.includes(c.key))
+
+  const rangeError = useMemo(() => {
+    const startTs = toSeconds(start)
+    const endTs = toSeconds(end)
+    if (!startTs || !endTs) return t('Please select a valid export time range')
+    if (endTs <= startTs) return t('End time must be later than start time')
+    if (endTs - startTs > maxRangeSeconds) {
+      return t('Export time range cannot exceed {{days}} days', {
+        days: maxDays,
+      })
+    }
+    return ''
+  }, [start, end, maxRangeSeconds, maxDays, t])
+
+  const applyQuickRange = (seconds: number) => {
+    const now = new Date()
+    setStart(toLocalInput(new Date(now.getTime() - seconds * 1000)))
+    setEnd(toLocalInput(now))
+  }
+
+  const toggleColumn = (key: string, checked: boolean) => {
+    setSelected((prev) => {
+      if (checked) return prev.includes(key) ? prev : [...prev, key]
+      return prev.filter((k) => k !== key)
+    })
+  }
+
+  const toggleAll = (checked: boolean) => {
+    setSelected(checked ? columns.map((c) => c.key) : [])
+  }
+
+  const parseType = (value: unknown): number | undefined => {
+    const raw = Array.isArray(value) ? value[0] : value
+    if (raw == null || raw === '') return undefined
+    const num = Number(raw)
+    return Number.isFinite(num) ? num : undefined
+  }
+
+  const handleSubmit = async () => {
+    if (rangeError) {
+      toast.error(rangeError)
+      return
+    }
+    const activeColumns = columns
+      .filter((c) => selected.includes(c.key))
+      .map((c) => c.key)
+    if (activeColumns.length === 0) {
+      toast.error(t('Please select at least one export column'))
+      return
+    }
+
+    const payload: CreateLogExportPayload = {
+      type: parseType(searchParams.type),
+      token_name: searchParams.token || undefined,
+      model_name: searchParams.model || undefined,
+      group: searchParams.group || undefined,
+      request_id: searchParams.requestId || undefined,
+      start_timestamp: toSeconds(start),
+      end_timestamp: toSeconds(end),
+      columns: activeColumns,
+    }
+    if (isAdmin) {
+      payload.username = searchParams.username || undefined
+      payload.channel = searchParams.channel
+        ? Number(searchParams.channel) || 0
+        : 0
+    }
+
+    setSubmitting(true)
+    try {
+      const result = await createLogExport(payload)
+      if (result.success) {
+        toast.success(
+          t('Export task created, download it from the export records page')
+        )
+        onOpenChange(false)
+      } else {
+        handleServerError(result, t('Failed to create export task'))
+      }
+    } catch (e: unknown) {
+      handleServerError(e, t('Failed to create export task'))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t('Export Usage Logs')}
+      description={t(
+        'Create a background task that exports the filtered logs as a compressed CSV file.'
+      )}
+      contentClassName='sm:max-w-2xl'
+      footer={
+        <>
+          <Button variant='outline' onClick={() => onOpenChange(false)}>
+            {t('Cancel')}
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={submitting || !!rangeError || selected.length === 0}
+            className='gap-1.5'
+          >
+            <Download className='size-4' />
+            {submitting ? t('Exporting') : t('Export')}
+          </Button>
+        </>
+      }
+    >
+      <div className='space-y-5'>
+        <section className='space-y-3'>
+          <div className='flex items-center justify-between'>
+            <div className='text-sm font-semibold'>{t('Export time')}</div>
+            <div className='text-muted-foreground text-xs'>
+              {t('Up to {{days}} days', { days: maxDays })}
+            </div>
+          </div>
+          <div className='flex flex-wrap items-center gap-2'>
+            <span className='text-muted-foreground text-xs'>
+              {t('Quick select')}
+            </span>
+            {QUICK_RANGES.map((range) => {
+              const disabled = range.seconds > maxRangeSeconds
+              return (
+                <Button
+                  key={range.labelKey}
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  disabled={disabled}
+                  onClick={() => applyQuickRange(range.seconds)}
+                >
+                  {t(range.labelKey)}
+                </Button>
+              )
+            })}
+          </div>
+          <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+            <div className='space-y-1.5'>
+              <Label className='text-xs'>{t('Start time')}</Label>
+              <input
+                type='datetime-local'
+                value={start}
+                max={end || undefined}
+                onChange={(e) => setStart(e.target.value)}
+                className='border-input bg-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2'
+              />
+            </div>
+            <div className='space-y-1.5'>
+              <Label className='text-xs'>{t('End time')}</Label>
+              <input
+                type='datetime-local'
+                value={end}
+                min={start || undefined}
+                onChange={(e) => setEnd(e.target.value)}
+                className='border-input bg-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2'
+              />
+            </div>
+          </div>
+          {rangeError && (
+            <div className='text-destructive text-xs'>{rangeError}</div>
+          )}
+        </section>
+
+        <section className='space-y-2'>
+          <div className='flex items-center justify-between'>
+            <div className='text-sm font-semibold'>{t('Export columns')}</div>
+            <label className='flex cursor-pointer items-center gap-2 text-xs'>
+              <Checkbox
+                checked={allChecked}
+                indeterminate={someChecked && !allChecked}
+                onCheckedChange={(checked) => toggleAll(checked === true)}
+              />
+              {t('Select all')}
+            </label>
+          </div>
+          <div className='grid grid-cols-2 gap-2 sm:grid-cols-3'>
+            {columns.map((column) => {
+              const checked = selected.includes(column.key)
+              return (
+                <label
+                  key={column.key}
+                  className={cn(
+                    'flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-sm transition-colors',
+                    checked
+                      ? 'border-primary/40 bg-muted/60'
+                      : 'border-transparent hover:bg-muted/40'
+                  )}
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={(value) =>
+                      toggleColumn(column.key, value === true)
+                    }
+                  />
+                  <span className='whitespace-nowrap'>
+                    {t(column.labelKey)}
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </section>
+      </div>
+    </Dialog>
+  )
+}

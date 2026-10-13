@@ -1,0 +1,129 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { Plus } from 'lucide-react'
+import { useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
+
+import { SectionPageLayout } from '@/components/layout'
+import { Button } from '@/components/ui/button'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useCanWriteModels } from '@/features/models/hooks/use-model-permissions'
+
+import { ModelsDialogs } from './components/models-dialogs'
+import { ModelsPrimaryButtons } from './components/models-primary-buttons'
+import { ModelsProvider, useModels } from './components/models-provider'
+import { ModelsTable } from './components/models-table'
+import { VendorsTable } from './components/vendors-table'
+import {
+  type ModelsSectionId,
+  MODELS_DEFAULT_SECTION,
+  MODELS_SECTION_IDS,
+} from './section-registry'
+
+const route = getRouteApi('/_authenticated/models/$section')
+
+const SECTION_META: Record<
+  ModelsSectionId,
+  { titleKey: string; tabKey: string }
+> = {
+  metadata: {
+    titleKey: 'Model management',
+    tabKey: 'Models',
+  },
+  vendors: { titleKey: 'Vendor management', tabKey: 'Vendors' },
+}
+
+function ModelsContent() {
+  const { t } = useTranslation()
+  const canWrite = useCanWriteModels()
+  const navigate = useNavigate({ from: '/models/$section' })
+  const { setOpen, setCurrentVendor } = useModels()
+  const params = route.useParams()
+  const activeSection = (params.section ??
+    MODELS_DEFAULT_SECTION) as ModelsSectionId
+
+  const handleSectionChange = useCallback(
+    (section: string) => {
+      void navigate({
+        to: '/models/$section',
+        params: { section: section as ModelsSectionId },
+        search: (previous) => previous,
+      })
+    },
+    [navigate]
+  )
+
+  const meta = SECTION_META[activeSection] ?? SECTION_META.metadata
+
+  let actions = <ModelsPrimaryButtons />
+  let content = <ModelsTable />
+  if (activeSection === 'vendors') {
+    actions = (
+      <Button
+        size='sm'
+        disabled={!canWrite}
+        onClick={() => {
+          setCurrentVendor(null)
+          setOpen('create-vendor')
+        }}
+      >
+        <Plus className='size-4' />
+        {t('Add Vendor')}
+      </Button>
+    )
+    content = <VendorsTable />
+  }
+
+  return (
+    <>
+      <SectionPageLayout
+        fixedContent
+        stackActionsOnMobile={activeSection === 'metadata'}
+      >
+        <SectionPageLayout.Title>{t(meta.titleKey)}</SectionPageLayout.Title>
+        <SectionPageLayout.Actions>{actions}</SectionPageLayout.Actions>
+        <SectionPageLayout.Content>
+          <div className='flex h-full min-h-0 flex-col gap-4'>
+            <Tabs value={activeSection} onValueChange={handleSectionChange}>
+              <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
+                {MODELS_SECTION_IDS.map((section) => (
+                  <TabsTrigger key={section} value={section}>
+                    {t(SECTION_META[section].tabKey)}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+            <div className='min-h-0 flex-1'>{content}</div>
+          </div>
+        </SectionPageLayout.Content>
+      </SectionPageLayout>
+
+      <ModelsDialogs />
+    </>
+  )
+}
+
+export function Models() {
+  return (
+    <ModelsProvider>
+      <ModelsContent />
+    </ModelsProvider>
+  )
+}

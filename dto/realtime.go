@@ -1,0 +1,27 @@
+// Compatibility aliases for protocol types extracted into RelayKit.
+package dto
+
+import kit "new-router/relaykit/dto"
+
+const RealtimeEventTypeError = kit.RealtimeEventTypeError
+const RealtimeEventTypeSessionUpdate = kit.RealtimeEventTypeSessionUpdate
+const RealtimeEventTypeConversationCreate = kit.RealtimeEventTypeConversationCreate
+const RealtimeEventTypeResponseCreate = kit.RealtimeEventTypeResponseCreate
+const RealtimeEventInputAudioBufferAppend = kit.RealtimeEventInputAudioBufferAppend
+const RealtimeEventTypeResponseDone = kit.RealtimeEventTypeResponseDone
+const RealtimeEventTypeSessionUpdated = kit.RealtimeEventTypeSessionUpdated
+const RealtimeEventTypeSessionCreated = kit.RealtimeEventTypeSessionCreated
+const RealtimeEventResponseAudioDelta = kit.RealtimeEventResponseAudioDelta
+const RealtimeEventResponseAudioTranscriptionDelta = kit.RealtimeEventResponseAudioTranscriptionDelta
+const RealtimeEventResponseFunctionCallArgumentsDelta = kit.RealtimeEventResponseFunctionCallArgumentsDelta
+const RealtimeEventResponseFunctionCallArgumentsDone = kit.RealtimeEventResponseFunctionCallArgumentsDone
+const RealtimeEventConversationItemCreated = kit.RealtimeEventConversationItemCreated
+
+type RealtimeEvent = kit.RealtimeEvent
+type RealtimeResponse = kit.RealtimeResponse
+type RealtimeUsage = kit.RealtimeUsage
+type RealtimeSession = kit.RealtimeSession
+type InputAudioTranscription = kit.InputAudioTranscription
+type RealTimeTool = kit.RealTimeTool
+type RealtimeItem = kit.RealtimeItem
+type RealtimeContent = kit.RealtimeContent

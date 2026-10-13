@@ -1,0 +1,270 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Read release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_version: ${{ steps.version.outputs.build_version }}
+      tag: ${{ steps.version.outputs.tag }}
+      image: ${{ steps.version.outputs.image }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Validate VERSION and release tag
+        id: version
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const buildVersion = fs.readFileSync('VERSION', 'utf8').trim();
+            const version = buildVersion.replace(/^v/, '');
+            const number = '(0|[1-9][0-9]*)';
+            const identifier = '(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)';
+            const pattern = new RegExp(`^${number}\\.${number}\\.${number}(-${identifier}(\\.${identifier})*)?$`);
+
+            // Build metadata (+...) is excluded because Docker tags cannot contain +.
+            if (!pattern.test(version) || version.length > 127) {
+              throw new Error('VERSION must contain a version such as 2.0.0 or v2.1.0-rc.1, without build metadata.');
+            }
+
+            const tag = `v${version}`;
+            let existingRef;
+            try {
+              const response = await github.rest.git.getRef({
+                ...context.repo,
+                ref: `tags/${tag}`,
+              });
+              existingRef = response.data.object;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            // A retry may replace assets, but must keep the tag on the same commit.
+            while (existingRef?.type === 'tag') {
+              const response = await github.rest.git.getTag({
+                ...context.repo,
+                tag_sha: existingRef.sha,
+              });
+              existingRef = response.data.object;
+            }
+            if (existingRef && existingRef.sha !== context.sha) {
+              throw new Error(`${tag} already points to another commit. Bump VERSION before publishing this commit.`);
+            }
+
+            core.setOutput('version', version);
+            core.setOutput('build_version', buildVersion);
+            core.setOutput('tag', tag);
+            core.setOutput('image', 'ghcr.io/rfym21/new-router');
+            core.setOutput('prerelease', String(version.includes('-')));
+
+  frontend:
+    name: Build embedded frontend
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: web
+        env:
+          VITE_REACT_APP_VERSION: ${{ needs.prepare.outputs.build_version }}
+        run: bun run build
+
+      - name: Upload embedded frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: web/dist/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  binaries:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [prepare, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    env:
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOEXPERIMENT: greenteagc
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_VERSION: ${{ needs.prepare.outputs.build_version }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.1'
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+            tokenkit/go.sum
+
+      - name: Download embedded frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: web/dist/
+
+      - name: Compile binary and package release
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          package="new-router_${RELEASE_VERSION}_${GOOS}_${GOARCH}"
+          binary="new-router"
+          if [[ "$GOOS" == "windows" ]]; then
+            binary="new-router.exe"
+          fi
+
+          mkdir -p "build/$package" dist
+          pgo="$(go list -m -f '{{.Dir}}' github.com/Calcium-Ion/moejs)/default.pgo"
+          go build -trimpath -pgo="$pgo" \
+            -ldflags="-s -w -X new-router/common.Version=$BUILD_VERSION" \
+            -o "build/$package/$binary" .
+          cp VERSION LICENSE NOTICE THIRD-PARTY-LICENSES.md "build/$package/"
+
+          if [[ "$GOOS" == "windows" ]]; then
+            (cd build && zip -r "../dist/$package.zip" "$package")
+          else
+            tar -C build -czf "dist/$package.tar.gz" "$package"
+          fi
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-router-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  docker:
+    name: Publish GHCR image
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image tags and labels
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=${{ needs.prepare.outputs.tag }}
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.prerelease == 'false' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, binaries, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: new-router-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Generate SHA256 checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz *.zip > checksums.txt
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: New Router ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.prepare.outputs.prerelease == 'false' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
+          body: |
+            Docker image (linux/amd64 and linux/arm64):
+
+            ```sh
+            docker pull ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
+            ```
+
+            Download the archive for your OS (linux, darwin/macOS, windows) and architecture (amd64 or arm64).
+            Each archive includes the embedded frontend, VERSION, and license notices.
+            Verify downloaded archives against checksums.txt with `sha256sum --ignore-missing -c checksums.txt`.

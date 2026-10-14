@@ -77,6 +77,8 @@ export interface LogExportListResponse {
 }
 
 export interface CreateLogExportPayload {
+  scope?: 'self' | 'all'
+  upstream_request_id?: string
   type?: number
   username?: string
   token_name?: string

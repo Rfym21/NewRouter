@@ -177,7 +177,6 @@ it('keeps all quick actions visible without opening a menu', async () => {
     'Hide',
     'Export',
     'Export Records',
-    'Download CSV',
     'Filter',
     'Search',
     'View',
@@ -193,7 +192,6 @@ it('keeps all quick actions visible without opening a menu', async () => {
     'Export Records',
     'Filter',
     'Search',
-    'Download CSV',
     'View',
   ]) {
     await user.tab()
@@ -287,7 +285,6 @@ it('collapses only date and statistics while keeping the right-hand quick action
     'Hide',
     'Export',
     'Export Records',
-    'Download CSV',
     'Filter',
     'Search',
     'View',

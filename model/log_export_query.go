@@ -13,42 +13,16 @@ import (
 )
 
 func buildLogExportQuery(filters LogExportFilters, userId int, isAdmin bool) (*gorm.DB, error) {
+	filter := LogFilter{Type: filters.LogType, ModelName: filters.ModelName, TokenName: filters.TokenName,
+		StartTimestamp: filters.StartTimestamp, EndTimestamp: filters.EndTimestamp, Group: filters.Group,
+		RequestId: filters.RequestId, UpstreamRequestId: filters.UpstreamRequestId}
 	tx := LOG_DB.Model(&Log{})
-	if !isAdmin {
+	if isAdmin {
+		filter.Username, filter.Channel = filters.Username, filters.Channel
+	} else {
 		tx = tx.Where("logs.user_id = ?", userId)
 	}
-	if filters.LogType != LogTypeUnknown {
-		tx = tx.Where("logs.type = ?", filters.LogType)
-	}
-	if filters.ModelName != "" {
-		modelNamePattern, err := sanitizeLikePattern(filters.ModelName)
-		if err != nil {
-			return nil, err
-		}
-		tx = tx.Where("logs.model_name LIKE ? ESCAPE '!'", modelNamePattern)
-	}
-	if isAdmin && filters.Username != "" {
-		tx = tx.Where("logs.username = ?", filters.Username)
-	}
-	if filters.TokenName != "" {
-		tx = tx.Where("logs.token_name = ?", filters.TokenName)
-	}
-	if filters.RequestId != "" {
-		tx = tx.Where("logs.request_id = ?", filters.RequestId)
-	}
-	if filters.StartTimestamp != 0 {
-		tx = tx.Where("logs.created_at >= ?", filters.StartTimestamp)
-	}
-	if filters.EndTimestamp != 0 {
-		tx = tx.Where("logs.created_at <= ?", filters.EndTimestamp)
-	}
-	if isAdmin && filters.Channel != 0 {
-		tx = tx.Where("logs.channel_id = ?", filters.Channel)
-	}
-	if filters.Group != "" {
-		tx = tx.Where("logs."+logGroupCol+" = ?", filters.Group)
-	}
-	return tx, nil
+	return filter.apply(tx)
 }
 
 func countLogsForExport(filters LogExportFilters, userId int, isAdmin bool) (int64, error) {
@@ -59,19 +33,6 @@ func countLogsForExport(filters LogExportFilters, userId int, isAdmin bool) (int
 	var total int64
 	err = tx.Count(&total).Error
 	return total, err
-}
-
-func listLogsForExportBatch(filters LogExportFilters, userId int, isAdmin bool, lastId int, limit int) ([]*Log, error) {
-	tx, err := buildLogExportQuery(filters, userId, isAdmin)
-	if err != nil {
-		return nil, err
-	}
-	if lastId > 0 {
-		tx = tx.Where("logs.id < ?", lastId)
-	}
-	var logs []*Log
-	err = tx.Order("logs.id desc").Limit(limit).Find(&logs).Error
-	return logs, err
 }
 
 func buildLogExportHeader(columns []string) []string {
@@ -88,7 +49,13 @@ func buildLogExportHeader(columns []string) []string {
 func buildLogExportRow(log *Log, columns []string) []string {
 	row := make([]string, 0, len(columns))
 	for _, column := range columns {
-		row = append(row, getLogExportValue(log, column))
+		value := getLogExportValue(log, column)
+		if value != "" && strings.ContainsRune("=+-@\t\r", rune(value[0])) {
+			if _, err := strconv.ParseFloat(value, 64); err != nil {
+				value = "'" + value
+			}
+		}
+		row = append(row, value)
 	}
 	return row
 }
@@ -99,6 +66,18 @@ func getLogExportValue(log *Log, column string) string {
 		other = map[string]interface{}{}
 	}
 	switch column {
+	case "request_id":
+		return log.RequestId
+	case "stream":
+		return strconv.FormatBool(log.IsStream)
+	case "cache_read":
+		return strconv.FormatFloat(toFloat64(other["cache_tokens"]), 'f', -1, 64)
+	case "cache_write":
+		value := toFloat64(other["cache_creation_tokens_5m"]) + toFloat64(other["cache_creation_tokens_1h"])
+		if value == 0 {
+			value = toFloat64(other["cache_creation_tokens"])
+		}
+		return strconv.FormatFloat(value, 'f', -1, 64)
 	case "time":
 		return time.Unix(log.CreatedAt, 0).Format("2006-01-02 15:04:05")
 	case "channel":
@@ -220,15 +199,9 @@ func toFloat64(value any) float64 {
 }
 
 func sanitizeUserLogs(logs []*Log) {
-	for i := range logs {
-		var otherMap map[string]interface{}
-		otherMap, _ = common.StrToMap(logs[i].Other)
-		if otherMap != nil {
-			delete(otherMap, "admin_info")
-			delete(otherMap, "stream_status")
-		}
-		logs[i].ChannelName = ""
-		logs[i].Other = common.MapToJsonStr(otherMap)
+	for _, log := range logs {
+		log.ChannelName = ""
+		log.Other = formatLogOtherJSON(log.Other, logOtherVisibilityUser)
 	}
 }
 

@@ -1,21 +1,3 @@
-/*
-Copyright (C) 2023-2026 QuantumNous
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-For commercial licensing, please contact support@quantumnous.com
-*/
 import { useQueryClient, useIsFetching, useQuery } from '@tanstack/react-query'
 import { useNavigate, getRouteApi } from '@tanstack/react-router'
 import type { Table } from '@tanstack/react-table'
@@ -41,6 +23,25 @@ import {
 } from '@/components/ui/tooltip'
 import { getGroups } from '@/features/users/api'
 import { useMediaQuery } from '@/hooks'
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { useStatus } from '@/hooks/use-status'
 import { getUserGroups } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -50,7 +51,6 @@ import { getDefaultTimeRange } from '../lib/utils'
 import type { CommonLogFilters } from '../types'
 import { CommonLogsStats } from './common-logs-stats'
 import { CompactDateTimeRangePicker } from './compact-date-time-range-picker'
-import { ExportLogsDialog } from './dialogs/export-logs-dialog'
 import {
   LogsFilterField,
   LogsFilterInput,
@@ -124,9 +124,10 @@ export function CommonLogsFilterBar<TData>(
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const searchParams = route.useSearch()
-  const { isAdminView: isAdmin } = useLogsViewScope()
+  const { isAdminView: isAdmin, canManageScope } = useLogsViewScope()
   const { sensitiveVisible, setSensitiveVisible, setExportDialogOpen } =
     useUsageLogsContext()
+  const { status } = useStatus()
   const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
   const { data: adminGroups } = useQuery({
     queryKey: ['groups'],
@@ -322,16 +323,18 @@ export function CommonLogsFilterBar<TData>(
   const toolbarActions = (
     <div className='flex max-w-full flex-wrap items-center justify-end gap-1.5'>
       {sensitiveToggle}
-      <Button
-        type='button'
-        variant='outline'
-        size='sm'
-        onClick={() => setExportDialogOpen(true)}
-        className='gap-1.5'
-      >
-        <Download className='size-3.5' />
-        {t('Export')}
-      </Button>
+      {(canManageScope || status?.log_export_enabled !== false) && (
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          onClick={() => setExportDialogOpen(true)}
+          className='gap-1.5'
+        >
+          <Download className='size-3.5' />
+          {t('Export')}
+        </Button>
+      )}
       <Button
         type='button'
         variant='ghost'
@@ -516,7 +519,6 @@ export function CommonLogsFilterBar<TData>(
       compactMobile
       stats={statsBar}
       actionStart={toolbarActions}
-      actionEnd={<ExportLogsDialog />}
       primaryFilters={
         <>
           {dateRangeFilter}

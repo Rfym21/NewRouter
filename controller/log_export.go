@@ -15,16 +15,18 @@ import (
 )
 
 type LogExportRequest struct {
-	Type           int      `json:"type"`
-	Username       string   `json:"username"`
-	TokenName      string   `json:"token_name"`
-	ModelName      string   `json:"model_name"`
-	StartTimestamp int64    `json:"start_timestamp"`
-	EndTimestamp   int64    `json:"end_timestamp"`
-	Channel        int      `json:"channel"`
-	Group          string   `json:"group"`
-	RequestId      string   `json:"request_id"`
-	Columns        []string `json:"columns"`
+	UpstreamRequestId string   `json:"upstream_request_id,omitempty"`
+	Type              int      `json:"type"`
+	Username          string   `json:"username"`
+	TokenName         string   `json:"token_name"`
+	ModelName         string   `json:"model_name"`
+	StartTimestamp    int64    `json:"start_timestamp"`
+	EndTimestamp      int64    `json:"end_timestamp"`
+	Channel           int      `json:"channel"`
+	Group             string   `json:"group"`
+	RequestId         string   `json:"request_id"`
+	Scope             string   `json:"scope,omitempty"`
+	Columns           []string `json:"columns"`
 }
 
 type logExportBatchRequest struct {
@@ -88,6 +90,7 @@ func CreateLogExport(c *gin.Context) {
 	}
 
 	userId, username, isAdmin := currentLogExportUser(c)
+	isAdmin = isAdmin && req.Scope != "self"
 	if !isAdmin {
 		req.Username = ""
 		req.Channel = 0
@@ -99,16 +102,17 @@ func CreateLogExport(c *gin.Context) {
 	}
 
 	filters := model.LogExportFilters{
-		LogType:        req.Type,
-		Username:       req.Username,
-		TokenName:      req.TokenName,
-		ModelName:      req.ModelName,
-		StartTimestamp: req.StartTimestamp,
-		EndTimestamp:   req.EndTimestamp,
-		Channel:        req.Channel,
-		Group:          req.Group,
-		RequestId:      req.RequestId,
-		Language:       i18n.StatedLang(c),
+		LogType:           req.Type,
+		UpstreamRequestId: req.UpstreamRequestId,
+		Username:          req.Username,
+		TokenName:         req.TokenName,
+		ModelName:         req.ModelName,
+		StartTimestamp:    req.StartTimestamp,
+		EndTimestamp:      req.EndTimestamp,
+		Channel:           req.Channel,
+		Group:             req.Group,
+		RequestId:         req.RequestId,
+		Language:          i18n.StatedLang(c),
 	}
 	release, ok, err := service.AcquireLogExportLock(userId)
 	if err != nil {

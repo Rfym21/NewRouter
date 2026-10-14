@@ -35,6 +35,7 @@ import userEvent from '@testing-library/user-event'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import * as logExportApi from '@/features/log-export/api'
 import { ROLE } from '@/lib/roles'
 import { STATUS_QUERY_KEY } from '@/lib/status-query'
 import { useAuthStore } from '@/stores/auth-store'
@@ -132,7 +133,7 @@ it('hides Export from users when the administrator turned user export off', asyn
   })
 
   await screen.findByRole('heading', { name: 'Common Logs' })
-  expect(screen.queryByRole('button', { name: 'Download CSV' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Export' })).toBeNull()
 })
 
 it('keeps Export for administrators when user export is off', async () => {
@@ -143,7 +144,7 @@ it('keeps Export for administrators when user export is off', async () => {
   })
 
   expect(
-    await screen.findByRole('button', { name: 'Download CSV' })
+    await screen.findByRole('button', { name: 'Export' })
   ).toBeVisible()
 })
 
@@ -156,13 +157,13 @@ it('blocks a range longer than the configured limit before any request', async (
     search: { startTime: Date.now() - 10 * DAY_MS, endTime: Date.now() },
   })
 
-  await user.click(await screen.findByRole('button', { name: 'Download CSV' }))
+  await user.click(await screen.findByRole('button', { name: 'Export' }))
 
   expect(await screen.findByRole('alert')).toHaveTextContent(
-    'The time range cannot exceed 7 days'
+    'Export time range cannot exceed 7 days'
   )
   expect(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Export' })
+    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
   ).toBeDisabled()
   expect(fetchSpy).not.toHaveBeenCalled()
 })
@@ -198,9 +199,9 @@ it('downloads the streamed logs of the current filters as CSV', async () => {
   const range = recentRange()
   renderExport({ role: ROLE.USER, search: { ...range, model: 'gpt-4o' } })
 
-  await user.click(await screen.findByRole('button', { name: 'Download CSV' }))
+  await user.click(await screen.findByRole('button', { name: 'Export' }))
   await user.click(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Export' })
+    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
   )
 
   await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
@@ -209,7 +210,7 @@ it('downloads the streamed logs of the current filters as CSV', async () => {
   expect(String(url)).toMatch(/^\/api\/log\/self\/export\?/)
   expect(params.get('model_name')).toBe('gpt-4o')
   expect(params.get('start_timestamp')).toBe(
-    String(Math.floor(range.startTime / 1000))
+    String(Math.floor(range.startTime / 60000) * 60)
   )
   expect(params.has('p')).toBe(false)
   const file = createObjectURL.mock.calls[0][0]
@@ -236,9 +237,9 @@ it('reports a server refusal and keeps the dialog open without a download', asyn
   const user = userEvent.setup()
   renderExport({ role: ROLE.ADMIN, search: recentRange() })
 
-  await user.click(await screen.findByRole('button', { name: 'Download CSV' }))
+  await user.click(await screen.findByRole('button', { name: 'Export' }))
   await user.click(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Export' })
+    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
   )
 
   await waitFor(() =>
@@ -270,13 +271,25 @@ it('treats a stream that ends without the success line as a failed export', asyn
   const user = userEvent.setup()
   renderExport({ role: ROLE.ADMIN, search: recentRange() })
 
-  await user.click(await screen.findByRole('button', { name: 'Download CSV' }))
+  await user.click(await screen.findByRole('button', { name: 'Export' }))
   await user.click(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Export' })
+    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
   )
 
   await waitFor(() =>
     expect(error).toHaveBeenCalledWith('Failed to export logs')
   )
   expect(createObjectURL).not.toHaveBeenCalled()
+})
+
+it('creates the background export with the same personal scope and upstream filter', async () => {
+  const create = vi.spyOn(logExportApi, 'createLogExport').mockResolvedValue({ success: true })
+  const user = userEvent.setup()
+  renderExport({ role: ROLE.USER, search: { ...recentRange(), upstreamRequestId: 'up-42', model: 'gpt-%' } })
+  await user.click(await screen.findByRole('button', { name: 'Export' }))
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Export' }))
+  await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+    scope: 'self', upstream_request_id: 'up-42', model_name: 'gpt-%',
+    columns: expect.arrayContaining(['request_id', 'cache_read', 'cache_write']),
+  })))
 })

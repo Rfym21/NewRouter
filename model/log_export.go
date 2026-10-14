@@ -2,6 +2,7 @@ package model
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -86,15 +87,16 @@ type LogExportShare struct {
 
 // LogExportFilters stores the log query constraints used by an export job.
 type LogExportFilters struct {
-	LogType        int    `json:"type"`
-	Username       string `json:"username,omitempty"`
-	TokenName      string `json:"token_name,omitempty"`
-	ModelName      string `json:"model_name,omitempty"`
-	StartTimestamp int64  `json:"start_timestamp"`
-	EndTimestamp   int64  `json:"end_timestamp"`
-	Channel        int    `json:"channel,omitempty"`
-	Group          string `json:"group,omitempty"`
-	RequestId      string `json:"request_id,omitempty"`
+	UpstreamRequestId string `json:"upstream_request_id,omitempty"`
+	LogType           int    `json:"type"`
+	Username          string `json:"username,omitempty"`
+	TokenName         string `json:"token_name,omitempty"`
+	ModelName         string `json:"model_name,omitempty"`
+	StartTimestamp    int64  `json:"start_timestamp"`
+	EndTimestamp      int64  `json:"end_timestamp"`
+	Channel           int    `json:"channel,omitempty"`
+	Group             string `json:"group,omitempty"`
+	RequestId         string `json:"request_id,omitempty"`
 	// Language records the creator's language alongside structured log content.
 	// CSV details retain the readable content fallback; raw exports keep parts.
 	Language string `json:"language,omitempty"`
@@ -120,6 +122,10 @@ var logExportColumns = []logExportColumn{
 	{Key: "retry", Label: "重试"},
 	{Key: "ip", Label: "IP"},
 	{Key: "details", Label: "详情"},
+	{Key: "stream", Label: "流式"},
+	{Key: "cache_read", Label: "缓存读"},
+	{Key: "cache_write", Label: "缓存写"},
+	{Key: "request_id", Label: "请求 ID"},
 }
 
 func logExportColumnMap() map[string]logExportColumn {
@@ -635,42 +641,40 @@ func generateLogExportFile(job *LogExportJob) error {
 	}
 
 	var exported int64
-	lastId := 0
-	for {
-		logs, err := listLogsForExportBatch(filters, job.UserId, job.IsAdmin, lastId, logExportBatchSize)
-		if err != nil {
-			return fmt.Errorf("query export batch: %w", err)
-		}
-		if len(logs) == 0 {
-			break
-		}
+	tx, err := buildLogExportQuery(filters, job.UserId, job.IsAdmin)
+	if err != nil {
+		return fmt.Errorf("query export: %w", err)
+	}
+	channelNames := map[int]string{}
+	err = streamLogs(tx.WithContext(context.Background()), "logs.created_at desc, logs.id desc", func(log *Log) error {
 		if !job.IsAdmin {
-			sanitizeUserLogs(logs)
+			sanitizeUserLogs([]*Log{log})
 		} else {
-			if err := fillLogChannelNames(logs); err != nil {
-				return fmt.Errorf("fill channel names: %w", err)
+			if name, ok := channelNames[log.ChannelId]; ok {
+				log.ChannelName = name
+			} else {
+				if err := fillLogChannelNames([]*Log{log}); err != nil {
+					return err
+				}
+				channelNames[log.ChannelId] = log.ChannelName
 			}
+			FormatRootLogs([]*Log{log})
 		}
-		for _, log := range logs {
-			if err := csvWriter.Write(buildLogExportRow(log, columns)); err != nil {
-				return fmt.Errorf("write csv row: %w", err)
+		if err := csvWriter.Write(buildLogExportRow(log, columns)); err != nil {
+			return err
+		}
+		exported++
+		if exported%int64(logExportBatchSize) == 0 {
+			csvWriter.Flush()
+			if err := csvWriter.Error(); err != nil {
+				return err
 			}
-			exported++
-			lastId = log.Id
+			_ = DB.Model(job).Updates(map[string]any{"exported": exported, "updated_at": time.Now().Unix()}).Error
 		}
-		csvWriter.Flush()
-		if err := csvWriter.Error(); err != nil {
-			return fmt.Errorf("flush csv: %w", err)
-		}
-		if exported%int64(logExportBatchSize*4) == 0 || exported == total {
-			_ = DB.Model(job).Updates(map[string]any{
-				"exported":   exported,
-				"updated_at": time.Now().Unix(),
-			}).Error
-		}
-		if len(logs) < logExportBatchSize {
-			break
-		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("stream export: %w", err)
 	}
 	csvWriter.Flush()
 	if err := csvWriter.Error(); err != nil {

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { getRouteApi } from '@tanstack/react-router'
 import { Download } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -28,10 +28,20 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { createLogExport } from '@/features/log-export/api'
 import type { CreateLogExportPayload } from '@/features/log-export/types'
-import { useIsAdmin } from '@/hooks/use-admin'
 import { useStatus } from '@/hooks/use-status'
 import { handleServerError } from '@/lib/handle-server-error'
 import { cn } from '@/lib/utils'
+
+import { exportLogs } from '../../api'
+import {
+  downloadCsv,
+  getLogCsvHeader,
+  getLogCsvRow,
+  toCsvLine,
+} from '../../lib/export'
+import { parseLogOther } from '../../lib/format'
+import { buildApiParams, getDefaultTimeRange } from '../../lib/utils'
+import { useLogsViewScope } from '../usage-logs-provider'
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
 
@@ -56,6 +66,10 @@ const COLUMN_DEFS: Array<{
   { key: 'retry', labelKey: 'Retry', adminOnly: true },
   { key: 'ip', labelKey: 'IP' },
   { key: 'details', labelKey: 'Details' },
+  { key: 'stream', labelKey: 'Stream' },
+  { key: 'cache_read', labelKey: 'Cache Read' },
+  { key: 'cache_write', labelKey: 'Cache Write' },
+  { key: 'request_id', labelKey: 'Request ID' },
 ]
 
 const QUICK_RANGES: Array<{ labelKey: string; seconds: number }> = [
@@ -86,7 +100,7 @@ interface LogExportDialogProps {
 
 export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
   const { t } = useTranslation()
-  const isAdmin = useIsAdmin()
+  const { isAdminView: isAdmin } = useLogsViewScope()
   const searchParams = route.useSearch()
   const { status } = useStatus()
 
@@ -95,7 +109,10 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
       (status as unknown as { log_export_max_days?: number } | null)
         ?.log_export_max_days
     )
-    return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 30
+    return Math.min(
+      Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 30,
+      status?.log_max_range_days || 365
+    )
   }, [status])
   const maxRangeSeconds = maxDays * 24 * 3600
 
@@ -105,13 +122,100 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
   )
 
   const [start, setStart] = useState(() =>
-    toLocalInput(new Date(Date.now() - 24 * 3600 * 1000))
+    toLocalInput(
+      searchParams.startTime
+        ? new Date(searchParams.startTime)
+        : getDefaultTimeRange().start
+    )
   )
-  const [end, setEnd] = useState(() => toLocalInput(new Date()))
+  const [end, setEnd] = useState(() =>
+    toLocalInput(
+      searchParams.endTime
+        ? new Date(searchParams.endTime)
+        : getDefaultTimeRange().end
+    )
+  )
   const [selected, setSelected] = useState<string[]>(() =>
     COLUMN_DEFS.filter((c) => !c.adminOnly).map((c) => c.key)
   )
   const [submitting, setSubmitting] = useState(false)
+  const [exportedCount, setExportedCount] = useState<number | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const handleOpenChange = (next: boolean) => {
+    if (!next) abortRef.current?.abort()
+    onOpenChange(next)
+  }
+
+  const handleDownload = async () => {
+    if (rangeError || exportedCount !== null) return
+    const controller = new AbortController()
+    abortRef.current = controller
+    setExportedCount(0)
+    // Keep the official CSV formatting and protect spreadsheet formula cells.
+    const keys = [
+      'time',
+      'type',
+      ...(isAdmin ? ['username'] : []),
+      'token',
+      'group',
+      'model',
+      ...(isAdmin ? ['channel'] : []),
+      'stream',
+      'prompt',
+      'completion',
+      'cache_read',
+      'cache_write',
+      'cost',
+      'use_time',
+      'ip',
+      'request_id',
+      'details',
+      'retry',
+    ]
+    const indices = keys.flatMap((key, i) =>
+      selected.includes(key) && (key !== 'retry' || isAdmin) ? [i] : []
+    )
+    const lines = [
+      toCsvLine(
+        indices.map((i) => [...getLogCsvHeader(isAdmin, t), t('Retry')][i])
+      ),
+    ]
+    try {
+      const count = await exportLogs(
+        {
+          ...buildApiParams({ page: 1, pageSize: 1, searchParams, isAdmin }),
+          p: undefined,
+          page_size: undefined,
+          start_timestamp: toSeconds(start),
+          end_timestamp: toSeconds(end),
+        },
+        isAdmin,
+        {
+          signal: controller.signal,
+          onLog: (log) => {
+            const row = [
+              ...getLogCsvRow(log, isAdmin, t),
+              (
+                parseLogOther(log.other ?? '')?.admin_info?.use_channel ?? []
+              ).join('->'),
+            ]
+            lines.push(toCsvLine(indices.map((i) => row[i])))
+            if (lines.length % 500 === 0) setExportedCount(lines.length - 1)
+          },
+        }
+      )
+      downloadCsv(`usage-logs-${toSeconds(start)}-${toSeconds(end)}.csv`, lines)
+      toast.success(t('Exported {{count}} logs', { count }))
+      handleOpenChange(false)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        handleServerError(error, t('Failed to export logs'))
+      }
+    } finally {
+      abortRef.current = null
+      setExportedCount(null)
+    }
+  }
 
   const allChecked =
     columns.length > 0 && columns.every((c) => selected.includes(c.key))
@@ -147,13 +251,6 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
     setSelected(checked ? columns.map((c) => c.key) : [])
   }
 
-  const parseType = (value: unknown): number | undefined => {
-    const raw = Array.isArray(value) ? value[0] : value
-    if (raw == null || raw === '') return undefined
-    const num = Number(raw)
-    return Number.isFinite(num) ? num : undefined
-  }
-
   const handleSubmit = async () => {
     if (rangeError) {
       toast.error(rangeError)
@@ -168,11 +265,8 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
     }
 
     const payload: CreateLogExportPayload = {
-      type: parseType(searchParams.type),
-      token_name: searchParams.token || undefined,
-      model_name: searchParams.model || undefined,
-      group: searchParams.group || undefined,
-      request_id: searchParams.requestId || undefined,
+      ...buildApiParams({ page: 1, pageSize: 1, searchParams, isAdmin }),
+      scope: isAdmin ? 'all' : 'self',
       start_timestamp: toSeconds(start),
       end_timestamp: toSeconds(end),
       columns: activeColumns,
@@ -205,7 +299,7 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
   return (
     <Dialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title={t('Export Usage Logs')}
       description={t(
         'Create a background task that exports the filtered logs as a compressed CSV file.'
@@ -213,12 +307,29 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
       contentClassName='sm:max-w-2xl'
       footer={
         <>
-          <Button variant='outline' onClick={() => onOpenChange(false)}>
+          <Button variant='outline' onClick={() => handleOpenChange(false)}>
             {t('Cancel')}
           </Button>
           <Button
+            variant='outline'
+            onClick={handleDownload}
+            disabled={
+              submitting ||
+              exportedCount !== null ||
+              !!rangeError ||
+              selected.length === 0
+            }
+          >
+            {t('Download CSV')}
+          </Button>
+          <Button
             onClick={handleSubmit}
-            disabled={submitting || !!rangeError || selected.length === 0}
+            disabled={
+              submitting ||
+              exportedCount !== null ||
+              !!rangeError ||
+              selected.length === 0
+            }
             className='gap-1.5'
           >
             <Download className='size-4' />
@@ -228,6 +339,11 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
       }
     >
       <div className='space-y-5'>
+        {exportedCount !== null && (
+          <p aria-live='polite'>
+            {t('Exported {{count}} logs', { count: exportedCount })}
+          </p>
+        )}
         <section className='space-y-3'>
           <div className='flex items-center justify-between'>
             <div className='text-sm font-semibold'>{t('Export time')}</div>
@@ -278,7 +394,9 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
             </div>
           </div>
           {rangeError && (
-            <div className='text-destructive text-xs'>{rangeError}</div>
+            <div role='alert' className='text-destructive text-xs'>
+              {rangeError}
+            </div>
           )}
         </section>
 

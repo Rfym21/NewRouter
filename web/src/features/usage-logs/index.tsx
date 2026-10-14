@@ -167,10 +167,12 @@ function UsageLogsContent() {
         onOpenChange={setUserInfoDialogOpen}
       />
 
-      <LogExportDialog
-        open={exportDialogOpen}
-        onOpenChange={setExportDialogOpen}
-      />
+      {exportDialogOpen && (
+        <LogExportDialog
+          open={exportDialogOpen}
+          onOpenChange={setExportDialogOpen}
+        />
+      )}
 
       <CacheStatsDialog
         open={affinityDialogOpen}

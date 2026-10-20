@@ -95,6 +95,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if info.ChannelOtherSettings.AwsApiType == dto.AwsApiTypeMantle {
+		return mantleRequestURL(info)
+	}
 	if info.ChannelOtherSettings.AwsKeyType == dto.AwsKeyTypeApiKey {
 		awsModelId := getAwsModelID(info.UpstreamModelName)
 		a.ClientMode = ClientModeApiKey
@@ -159,8 +162,30 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
-	if a.ClientMode != ClientModeApiKey {
-		return doAwsClientRequest(c, info, a, requestBody)
+	var sendRequest func(io.Reader) (*http.Response, error)
+	switch info.ChannelOtherSettings.AwsApiType {
+	case dto.AwsApiTypeMantle:
+		sendRequest = func(body io.Reader) (*http.Response, error) {
+			req, err := a.newMantleRequest(c, info, body)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := channel.DoRequest(c, req, info)
+			if err != nil {
+				return nil, newAwsInvokeError(c.Request.Context(), err, "Mantle Messages")
+			}
+			return resp, nil
+		}
+	case "", dto.AwsApiTypeInvokeModel:
+		// Unconfigured channels retain the existing InvokeModel behavior.
+		if a.ClientMode != ClientModeApiKey {
+			return doAwsClientRequest(c, info, a, requestBody)
+		}
+		sendRequest = func(body io.Reader) (*http.Response, error) {
+			return channel.DoApiRequest(a, c, info, body)
+		}
+	default:
+		return nil, errors.New("invalid AWS API type")
 	}
 
 	if info != nil && requestBody != nil && !a.IsNova {
@@ -170,7 +195,7 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 	needsBodyRewrite := info != nil && claude.ShouldApplyClaudeRequestBodySettings(info)
 	needsRectifier := info != nil && info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled
 	if requestBody == nil || a.IsNova || (!needsBodyRewrite && !needsRectifier) {
-		return channel.DoApiRequest(a, c, info, requestBody)
+		return sendRequest(requestBody)
 	}
 
 	bodyBytes, err := service.ReadBufferedResponseBody(requestBody)
@@ -182,17 +207,17 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 		return nil, err
 	}
 	if !needsRectifier {
-		return channel.DoApiRequest(a, c, info, bytes.NewBuffer(bodyBytes))
+		return sendRequest(bytes.NewBuffer(bodyBytes))
 	}
 
-	resp, err := channel.DoApiRequest(a, c, info, bytes.NewBuffer(bodyBytes))
+	resp, err := sendRequest(bytes.NewBuffer(bodyBytes))
 	if err != nil || resp == nil || resp.StatusCode < http.StatusBadRequest {
 		return resp, err
 	}
 	rectified, retryErr := claude.RectifyThinkingSignatureHTTP(c, bodyBytes, resp,
 		claude.RectifyOptions{RequireSignatureError: false},
 		func(stripped []byte) (*http.Response, error) {
-			return channel.DoApiRequest(a, c, info, bytes.NewBuffer(stripped))
+			return sendRequest(bytes.NewBuffer(stripped))
 		})
 	if retryErr != nil {
 		logger.LogWarn(c, "aws claude signature rectifier abort: "+retryErr.Error())
@@ -205,7 +230,7 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
-	if a.ClientMode == ClientModeApiKey {
+	if info.ChannelOtherSettings.AwsApiType == dto.AwsApiTypeMantle || a.ClientMode == ClientModeApiKey {
 		claudeAdaptor := claude.Adaptor{}
 		usage, err = claudeAdaptor.DoResponse(c, resp, info)
 	} else {

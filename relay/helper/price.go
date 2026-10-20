@@ -15,6 +15,7 @@ import (
 	"new-router/relaykit/relayconvert/reasoning"
 	"new-router/relaykit/types"
 	"new-router/setting/billing_setting"
+	"new-router/setting/model_setting"
 	"new-router/setting/operation_setting"
 	"new-router/setting/ratio_setting"
 	hostreasoning "new-router/setting/reasoning"
@@ -303,6 +304,11 @@ func resolveBillingModelName(origin string) string {
 	}
 	candidates = append(candidates, hostreasoning.CanonicalBillingModelNames(origin)...)
 	base := hostreasoning.BaseModelName(origin)
+	// DeepSeek thinking tails (-none/-low/-max) bill at the base model's price,
+	// with or without @ modifiers after them.
+	if deepSeekBase, _, _, ok := reasoning.ParseDeepSeekV4ThinkingSuffix(base); ok && !model_setting.ShouldPreserveThinkingSuffix(base) {
+		candidates = append(candidates, deepSeekBase)
+	}
 	candidates = append(candidates, base)
 
 	seen := make(map[string]struct{}, len(candidates))

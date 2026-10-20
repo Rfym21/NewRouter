@@ -20,7 +20,6 @@ import { SystemBehaviorSection } from '../general/system-behavior-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
-import { LogExportSection } from '../maintenance/log-export-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
 import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
@@ -133,11 +132,10 @@ const OPERATIONS_SECTIONS = [
   },
   {
     id: 'alerts',
-    titleKey: 'Monitoring & Alerts',
+    titleKey: 'Model performance metrics',
     build: (settings: OperationsSettings) => (
       <MonitoringSettingsSection
         defaultValues={{
-          QuotaRemindThreshold: settings.QuotaRemindThreshold,
           'perf_metrics_setting.enabled':
             settings['perf_metrics_setting.enabled'] ?? true,
           'perf_metrics_setting.flush_interval':
@@ -152,10 +150,16 @@ const OPERATIONS_SECTIONS = [
   },
   {
     id: 'email',
-    titleKey: 'SMTP Email',
+    titleKey: 'Email & Notifications',
     build: (settings: OperationsSettings) => (
       <EmailSettingsSection
         defaultValues={{
+          QuotaRemindEnabled: settings.QuotaRemindEnabled,
+          QuotaRemindThreshold: settings.QuotaRemindThreshold,
+          EmailProvider: settings.EmailProvider,
+          ResendApiKey: settings.ResendApiKey,
+          ResendKeyConfigured: settings.ResendKeyConfigured,
+          ResendFrom: settings.ResendFrom,
           SMTPServer: settings.SMTPServer,
           SMTPPort: settings.SMTPPort,
           SMTPAccount: settings.SMTPAccount,
@@ -191,22 +195,12 @@ const OPERATIONS_SECTIONS = [
         defaultValues={{
           LogConsumeEnabled: Boolean(settings.LogConsumeEnabled),
           AdminAuditMode: String(settings.AdminAuditMode || 'billing_only'),
+          LogExportMaxDays: settings.LogExportMaxDays,
+          LogExportFileRetentionHours: settings.LogExportFileRetentionHours,
           'log_setting.user_export_enabled':
             settings['log_setting.user_export_enabled'] ?? true,
           'log_setting.max_range_days':
             settings['log_setting.max_range_days'] ?? 365,
-        }}
-      />
-    ),
-  },
-  {
-    id: 'log-export',
-    titleKey: 'Log Export',
-    build: (settings: OperationsSettings) => (
-      <LogExportSection
-        defaultValues={{
-          LogExportMaxDays: settings.LogExportMaxDays,
-          LogExportFileRetentionHours: settings.LogExportFileRetentionHours,
         }}
       />
     ),

@@ -5,49 +5,90 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"new-router/common"
 	"new-router/model"
 	"new-router/relaykit/dto"
+	"new-router/service/authz"
 	"new-router/setting/system_setting"
 )
 
-func NotifyRootUser(t string, subject string, content string) {
-	user := model.GetRootUser().ToBaseUser()
-	err := NotifyUser(user.Id, user.Email, user.GetSetting(), dto.NewNotify(t, subject, content, nil))
-	if err != nil {
-		common.SysLog(common.LogText("failed to notify root user: %s", err.Error()))
-	}
+// NotifyChannelWatchers sends a channel notice (a channel disabled or enabled
+// automatically, or a test of all channels finished) to every administrator
+// who receives channel notices. Until they choose, the root user receives them
+// and other administrators do not. render builds the subject and content in
+// the recipient's saved language; an empty language means DEFAULT_LANGUAGE.
+// A specified channel also requires channel read permission and membership
+// in the recipient's managed tag scope. General notices have no channel scope.
+func NotifyChannelWatchers(notifyType string, render func(lang string) (subject string, content string), channelIDs ...int) {
+	var channelTag string
+	var channelChecked, channelFound bool
+	notifyAdmins(notifyType, func(user model.User, setting dto.UserSetting) bool {
+		enabled := user.Role == common.RoleRootUser
+		if setting.ChannelNotifyEnabled != nil {
+			enabled = *setting.ChannelNotifyEnabled
+		}
+		if !enabled {
+			return false
+		}
+		if len(channelIDs) == 0 || user.Role == common.RoleRootUser {
+			return true
+		}
+		if !authz.Can(user.Id, user.Role, authz.ChannelRead) {
+			return false
+		}
+		if len(setting.AdminManagedTags) == 0 {
+			return true
+		}
+		if !channelChecked {
+			channelChecked = true
+			channel, err := model.GetChannelById(channelIDs[0], false)
+			if err == nil {
+				channelTag, channelFound = channel.GetTag(), true
+			}
+		}
+		return channelFound && slices.Contains(setting.AdminManagedTags, channelTag)
+	}, render)
 }
 
 // NotifyUpstreamModelUpdateWatchers sends the upstream model update notice to
 // every administrator who enabled it. render builds the subject and content in
 // the recipient's saved language; an empty language means DEFAULT_LANGUAGE.
 func NotifyUpstreamModelUpdateWatchers(render func(lang string) (subject string, content string)) {
+	sentCount := notifyAdmins(dto.NotifyTypeChannelUpdate, func(_ model.User, setting dto.UserSetting) bool {
+		return setting.UpstreamModelUpdateNotifyEnabled
+	}, render)
+	common.SysLog(common.LogText("upstream model update notifications sent: %d", sentCount))
+}
+
+// notifyAdmins sends a notice to each enabled administrator for whom receives
+// returns true, and returns how many notices it sent.
+func notifyAdmins(notifyType string, receives func(model.User, dto.UserSetting) bool, render func(lang string) (subject string, content string)) int {
 	var users []model.User
 	if err := model.DB.
 		Select("id", "email", "role", "status", "setting").
 		Where("status = ? AND role >= ?", common.UserStatusEnabled, common.RoleAdminUser).
 		Find(&users).Error; err != nil {
-		common.SysLog(common.LogText("failed to query upstream update notification users: %s", err.Error()))
-		return
+		common.SysLog(common.LogText("failed to query administrators to notify: %s", err.Error()))
+		return 0
 	}
 
 	sentCount := 0
 	for _, user := range users {
 		userSetting := user.GetSetting()
-		if !userSetting.UpstreamModelUpdateNotifyEnabled {
+		if !receives(user, userSetting) {
 			continue
 		}
 		subject, content := render(userSetting.Language)
-		if err := NotifyUser(user.Id, user.Email, userSetting, dto.NewNotify(dto.NotifyTypeChannelUpdate, subject, content, nil)); err != nil {
-			common.SysLog(common.LogText("failed to notify user %d for upstream model update: %s", user.Id, err.Error()))
+		if err := NotifyUser(user.Id, user.Email, userSetting, dto.NewNotify(notifyType, subject, content, nil)); err != nil {
+			common.SysLog(common.LogText("failed to send notice %s to user %d: %s", notifyType, user.Id, err.Error()))
 			continue
 		}
 		sentCount++
 	}
-	common.SysLog(common.LogText("upstream model update notifications sent: %d", sentCount))
+	return sentCount
 }
 
 func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data dto.Notify) error {

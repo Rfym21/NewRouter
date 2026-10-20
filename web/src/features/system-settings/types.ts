@@ -103,6 +103,12 @@ export type LogCleanupTaskResult = {
   deleted_count: number
 }
 
+export type AuditLogCleanupResponse = {
+  success: boolean
+  message?: string
+  data?: { deleted_count: number }
+}
+
 export type LogCleanupTask = SystemTask<
   LogCleanupTaskPayload,
   LogCleanupTaskState,
@@ -348,7 +354,12 @@ export type OperationsSettings = {
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean
   SelfUseModeEnabled: boolean
+  QuotaRemindEnabled: boolean
   QuotaRemindThreshold: string
+  EmailProvider: 'smtp' | 'resend'
+  ResendApiKey: string
+  ResendKeyConfigured: boolean
+  ResendFrom: string
   SMTPServer: string
   SMTPPort: string
   SMTPAccount: string

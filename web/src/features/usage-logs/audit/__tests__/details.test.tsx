@@ -35,6 +35,7 @@ import type { PermissionResourceDef } from '@/lib/admin-permissions'
 import { api } from '@/lib/api'
 import dayjs from '@/lib/dayjs'
 
+import { renderAuditContent } from '../../lib/format'
 import type { AuditLog } from '../api'
 import { AuditLogDetailsDialog } from '../components/audit-log-details-dialog'
 import { buildAuditDetails } from '../lib/audit-details'
@@ -76,6 +77,88 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+it('localizes audit cleanup completion and formats its cutoff date', async () => {
+  const i18n = createInstance()
+  await i18n.init({ lng: 'zh', resources: { zh } })
+  const timestamp = 1788600600
+  const date = dayjs.unix(timestamp).format('YYYY-MM-DD HH:mm:ss')
+  const params = { target_timestamp: timestamp, deleted_count: 42 }
+  const details = buildAuditDetails(
+    {
+      ...entry,
+      category: 'security',
+      action: 'audit_log.clear',
+      content: `Cleared 42 audit log entries before ${timestamp}`,
+      other: { op: { action: 'audit_log.clear', params } },
+    },
+    i18n.t
+  )
+  expect(details.summary).toBe(
+    i18n.t('Cleared {{count}} audit records created before {{date}}.', {
+      count: 42,
+      date,
+    })
+  )
+  expect(details.summary).not.toContain('audit log entries')
+  expect(details.fields).toEqual([
+    { label: i18n.t('Before'), value: date },
+    { label: i18n.t('Count'), value: 42 },
+  ])
+})
+
+it.each([0, 42])(
+  'formats audit cleanup count %i in the operation summary',
+  async (count) => {
+    const i18n = createInstance()
+    await i18n.init({ lng: 'zh', resources: { zh } })
+    const timestamp = 1788600600
+    expect(
+      renderAuditContent(
+        {
+          op: {
+            action: 'audit_log.clear',
+            params: { target_timestamp: timestamp, deleted_count: count },
+          },
+        },
+        i18n.t
+      )
+    ).toBe(
+      i18n.t('Cleared {{count}} audit records created before {{date}}.', {
+        count,
+        date: dayjs.unix(timestamp).format('YYYY-MM-DD HH:mm:ss'),
+      })
+    )
+  }
+)
+
+it('uses the localized audit cleanup name when no completion count was recorded', async () => {
+  const i18n = createInstance()
+  await i18n.init({ lng: 'zh', resources: { zh } })
+  expect(
+    renderAuditContent(
+      { op: { action: 'audit_log.clear', params: {} } },
+      i18n.t
+    )
+  ).toBe(i18n.t('Clear audit logs'))
+  expect(
+    renderAuditContent(
+      {
+        op: {
+          action: 'audit_log.clear',
+          params: { target_timestamp: 1788600600, deleted_count: 42 },
+        },
+        audit_info: {
+          method: 'POST',
+          route: '/api/log/audit/cleanup',
+          status: 403,
+          success: false,
+        },
+      },
+      i18n.t
+    )
+  ).toBe(i18n.t('Clear audit logs'))
 })
 
 it.each([

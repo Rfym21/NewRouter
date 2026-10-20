@@ -18,7 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect, useState } from 'react'
 
-import { CommandMenu } from '@/components/command-menu'
 import { SearchContext } from '@/context/search-context'
 
 type SearchProviderProps = {
@@ -42,7 +41,6 @@ export function SearchProvider({ children }: SearchProviderProps) {
   return (
     <SearchContext.Provider value={{ open, setOpen }}>
       {children}
-      <CommandMenu />
     </SearchContext.Provider>
   )
 }

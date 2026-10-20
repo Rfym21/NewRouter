@@ -24,6 +24,7 @@ import {
   splitBillingExprAndRequestRules,
   type ParsedTier,
 } from '@/features/pricing/lib/billing-expr'
+import { formatTimestampToDate } from '@/lib/format'
 import { translateServerText } from '@/lib/server-error-message'
 
 import type { UsageLog } from '../data/schema'
@@ -562,6 +563,7 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'subscription.user_quota_reset':
     'Administrator reset the quota of subscription plan {{plan_title}} (ID: {{plan_id}})',
   // Logs
+  'audit_log.clear': 'Clear audit logs',
   'log.clear': 'Cleared historical logs',
   'log.cleanup_start': 'Log cleanup task started.',
   // Generic middleware fallback
@@ -607,6 +609,25 @@ export function renderAuditContent(
 ): string | null {
   const op = other?.op
   if (!op?.action) return null
+  if (op.action === 'audit_log.clear') {
+    const count = op.params?.deleted_count
+    const timestamp = op.params?.target_timestamp
+    if (
+      other?.audit_info?.success !== false &&
+      typeof count === 'number' &&
+      Number.isSafeInteger(count) &&
+      count >= 0 &&
+      typeof timestamp === 'number' &&
+      Number.isSafeInteger(timestamp) &&
+      timestamp > 0
+    ) {
+      return t('Cleared {{count}} audit records created before {{date}}.', {
+        count,
+        date: formatTimestampToDate(timestamp),
+      })
+    }
+    return t('Clear audit logs')
+  }
   if (
     op.action === 'redemption.delete_batch' ||
     (op.action === 'redemption.delete' &&

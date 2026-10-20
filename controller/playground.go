@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"new-router/common"
 	"new-router/i18n"
 	"new-router/middleware"
 	"new-router/model"
@@ -19,7 +20,7 @@ func Playground(c *gin.Context) {
 	defer func() {
 		if newAPIError != nil {
 			c.JSON(newAPIError.StatusCode, gin.H{
-				"error": newAPIError.ToOpenAIError(),
+				"error": newAPIError.ToOpenAIError(common.UpstreamAddresses(c)...),
 			})
 		}
 	}()

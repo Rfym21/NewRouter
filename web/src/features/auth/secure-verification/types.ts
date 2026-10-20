@@ -25,6 +25,7 @@ export type VerificationMethod =
   | 'oauth'
   | 'session'
 export type SecurityProofScope =
+  | 'audit_log.clear'
   | 'channel.key.read'
   | 'channel.key.export'
   | 'passkey.register'
@@ -52,6 +53,7 @@ export type SecurityProofScope =
 export type AdminUserManageAction = 'disable' | 'enable' | 'promote' | 'demote'
 
 export type VerificationOperation =
+  | { scope: 'audit_log.clear'; context: { target_timestamp: number } }
   | { scope: 'channel.key.read'; context: { channel_id: number } }
   | { scope: 'channel.key.export'; context: { channel_ids: number[] } }
   | {
@@ -93,6 +95,7 @@ export type VerificationOperation =
   | {
       scope: Exclude<
         SecurityProofScope,
+        | 'audit_log.clear'
         | 'channel.key.read'
         | 'channel.key.export'
         | 'account.binding.bind'

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect, useId, useMemo } from 'react'
+import { useId, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -51,14 +51,19 @@ import {
 } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
+import { useResetForm } from '../hooks/use-reset-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
+import { AuditLogCleanup } from './audit-log-cleanup'
 import { HistoryLogCleanup } from './history-log-cleanup'
+import { LogExportFields } from './log-export-section'
 import { ServerLogFiles } from './server-log-files'
 
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
   AdminAuditMode: z.string(),
+  LogExportMaxDays: z.number().int().min(1).max(365),
+  LogExportFileRetentionHours: z.number().int().min(1).max(8760),
   log_setting: z.object({
     user_export_enabled: z.boolean(),
     max_range_days: z.number().int().min(1),
@@ -71,6 +76,8 @@ type LogSettingsSectionProps = {
   defaultValues: {
     LogConsumeEnabled: boolean
     AdminAuditMode: string
+    LogExportMaxDays: number
+    LogExportFileRetentionHours: number
     'log_setting.user_export_enabled': boolean
     'log_setting.max_range_days': number
   }
@@ -85,6 +92,9 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
     () => ({
       LogConsumeEnabled: props.defaultValues.LogConsumeEnabled,
       AdminAuditMode: props.defaultValues.AdminAuditMode,
+      LogExportMaxDays: props.defaultValues.LogExportMaxDays,
+      LogExportFileRetentionHours:
+        props.defaultValues.LogExportFileRetentionHours,
       log_setting: {
         user_export_enabled:
           props.defaultValues['log_setting.user_export_enabled'],
@@ -98,14 +108,15 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
     defaultValues: formDefaults,
   })
 
-  useEffect(() => {
-    form.reset(formDefaults)
-  }, [formDefaults, form])
+  const isSaving = form.formState.isSubmitting || updateOption.isPending
+  useResetForm(form, isSaving ? undefined : formDefaults)
 
   const onSubmit = async (values: LogSettingsFormValues) => {
     const changes = [
       ['LogConsumeEnabled', values.LogConsumeEnabled],
       ['AdminAuditMode', values.AdminAuditMode],
+      ['LogExportMaxDays', values.LogExportMaxDays],
+      ['LogExportFileRetentionHours', values.LogExportFileRetentionHours],
       [
         'log_setting.user_export_enabled',
         values.log_setting.user_export_enabled,
@@ -124,7 +135,7 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
-            isSaving={updateOption.isPending}
+            isSaving={isSaving}
             saveLabel='Save log settings'
           />
           <div
@@ -267,6 +278,7 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                   </FormItem>
                 )}
               />
+              <LogExportFields />
             </SettingsFormGrid>
           </div>
         </SettingsForm>
@@ -275,6 +287,10 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
       <Separator />
 
       <HistoryLogCleanup />
+
+      <Separator />
+
+      <AuditLogCleanup />
 
       <Separator />
 

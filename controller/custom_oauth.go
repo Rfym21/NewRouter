@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"new-router/common"
+	"new-router/i18n"
 	"new-router/middleware"
 	"new-router/model"
 	"new-router/oauth"
@@ -547,7 +548,7 @@ func UnbindCustomOAuth(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
-	notificationFailed = service.NotifyAccountSecurityChange(user.Email, "Login account unlinked") != nil
+	notificationFailed = service.NotifyAccountSecurityChange(service.AccountMailLanguage(c, user.Id), user.Email, i18n.MsgSecurityEventLoginUnlinked) != nil
 
 	common.ApiSuccessT(c, "Unbound successfully", gin.H{"notification_warning": notificationFailed})
 }

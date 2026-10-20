@@ -17,8 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { authRequestOptions } from '@/lib/secure-verification'
 
 import type {
+  AuditLogCleanupResponse,
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
   SystemOptionsResponse,
@@ -63,6 +65,23 @@ export async function startLogCleanupTask(targetTimestamp: number) {
     null,
     {
       params: { target_timestamp: targetTimestamp },
+    }
+  )
+  return res.data
+}
+
+export async function clearAuditLogs(
+  targetTimestamp: number,
+  proofToken: string,
+  signal?: AbortSignal
+) {
+  const res = await api.post<AuditLogCleanupResponse>(
+    '/api/log/audit/cleanup',
+    { target_timestamp: targetTimestamp },
+    {
+      ...authRequestOptions,
+      headers: { 'X-Security-Proof': proofToken },
+      signal,
     }
   )
   return res.data

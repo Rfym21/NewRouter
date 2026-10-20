@@ -28,6 +28,14 @@ export const Route = createFileRoute(
   '/_authenticated/system-settings/operations/$section'
 )({
   beforeLoad: ({ params }) => {
+    if (params.section === 'log-export') {
+      throw redirect({
+        to: '/system-settings/operations/$section',
+        params: { section: 'logs' },
+        replace: true,
+      })
+    }
+
     if (params.section === 'monitoring') {
       throw redirect({
         to: '/system-settings/request-policies/$section',

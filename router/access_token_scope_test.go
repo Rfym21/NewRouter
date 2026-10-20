@@ -232,3 +232,13 @@ func TestAccessTokenVerificationScopesAreAllListed(t *testing.T) {
 		assert.True(t, listed, "verification scope %s has no access token rule", scope)
 	}
 }
+
+func TestAuditCleanupIsBrowserOnly(t *testing.T) {
+	newAccessTokenScopeTestEngine(t)
+	rule, ok := middleware.AccessTokenRouteRule("POST /api/log/audit/cleanup")
+	require.True(t, ok)
+	assert.Equal(t, "session", rule.Kind(), "audit cleanup requires a browser login even for root PATs")
+	scope, listed := service.AccessTokenVerificationScope(service.VerificationScopeAuditLogClear)
+	require.True(t, listed)
+	assert.Empty(t, scope, "personal access tokens must not obtain an audit cleanup proof")
+}

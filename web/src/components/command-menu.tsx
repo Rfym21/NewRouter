@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useLocation, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ChevronRight, Laptop, Moon, Sun } from 'lucide-react'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
@@ -33,22 +33,41 @@ import {
 } from '@/components/ui/command'
 import { useSearch } from '@/context/search-context'
 import { useTheme } from '@/context/theme-provider'
-import { useSidebarData } from '@/hooks/use-sidebar-data'
+import { useSidebarView } from '@/hooks/use-sidebar-view'
+import {
+  ADMIN_PERMISSION_ACTIONS,
+  ADMIN_PERMISSION_RESOURCES,
+  hasPermission,
+} from '@/lib/admin-permissions'
+import { useAuthStore } from '@/stores/auth-store'
 
-import { getNavGroupsForPath } from './layout/lib/sidebar-view-registry'
 import { ScrollArea } from './ui/scroll-area'
+
+const SEARCH_PAGE_RESOURCES: Record<string, string> = {
+  channels: ADMIN_PERMISSION_RESOURCES.CHANNEL,
+  models: ADMIN_PERMISSION_RESOURCES.MODEL,
+  users: ADMIN_PERMISSION_RESOURCES.USER,
+  'redemption-codes': 'redemption',
+  subscriptions: 'subscription',
+  'task-plugins': ADMIN_PERMISSION_RESOURCES.TASK_PLUGIN,
+}
 
 export function CommandMenu() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { setTheme } = useTheme()
   const { open, setOpen } = useSearch()
-  const { pathname } = useLocation()
-  const sidebarData = useSidebarData()
-
-  // Use the active nested sidebar view's nav groups when one matches
-  // the current URL; otherwise fall back to the root navigation.
-  const navGroups = getNavGroupsForPath(pathname, t) ?? sidebarData.navGroups
+  // Offer the same pages as the sidebar, so search never lists pages the
+  // user's role or the sidebar settings hide.
+  const { navGroups } = useSidebarView()
+  const user = useAuthStore((state) => state.auth.user)
+  const canSearchPage = (url: string | undefined) => {
+    if (!url) return false
+    const resource = SEARCH_PAGE_RESOURCES[url.split('/')[1]]
+    return (
+      !resource || hasPermission(user, resource, ADMIN_PERMISSION_ACTIONS.READ)
+    )
+  }
 
   const runCommand = React.useCallback(
     (command: () => unknown) => {
@@ -68,10 +87,11 @@ export function CommandMenu() {
             {navGroups.map((group) => (
               <CommandGroup key={group.id || group.title} heading={group.title}>
                 {group.items.map((navItem) => {
-                  if (navItem.url)
-                    {return (
+                  if (navItem.url) {
+                    if (!canSearchPage(navItem.url)) return null
+                    return (
                       <CommandItem
-                        key={navItem.url}
+                        key={`${navItem.title}-${navItem.url}`}
                         value={navItem.title}
                         onSelect={() => {
                           runCommand(() => navigate({ to: navItem.url }))
@@ -82,22 +102,25 @@ export function CommandMenu() {
                         </div>
                         {navItem.title}
                       </CommandItem>
-                    )}
+                    )
+                  }
 
-                  return navItem.items?.map((subItem) => (
-                    <CommandItem
-                      key={`${navItem.title}-${subItem.url}`}
-                      value={`${navItem.title}-${subItem.url}`}
-                      onSelect={() => {
-                        runCommand(() => navigate({ to: subItem.url }))
-                      }}
-                    >
-                      <div className='flex size-4 items-center justify-center'>
-                        <ArrowRight className='text-muted-foreground/80 size-2' />
-                      </div>
-                      {navItem.title} <ChevronRight /> {subItem.title}
-                    </CommandItem>
-                  ))
+                  return navItem.items
+                    ?.filter((subItem) => canSearchPage(subItem.url))
+                    .map((subItem) => (
+                      <CommandItem
+                        key={`${navItem.title}-${subItem.url}`}
+                        value={`${navItem.title}-${subItem.url}`}
+                        onSelect={() => {
+                          runCommand(() => navigate({ to: subItem.url }))
+                        }}
+                      >
+                        <div className='flex size-4 items-center justify-center'>
+                          <ArrowRight className='text-muted-foreground/80 size-2' />
+                        </div>
+                        {navItem.title} <ChevronRight /> {subItem.title}
+                      </CommandItem>
+                    ))
                 })}
               </CommandGroup>
             ))}

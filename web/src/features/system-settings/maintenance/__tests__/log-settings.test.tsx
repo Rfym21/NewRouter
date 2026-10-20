@@ -26,9 +26,11 @@ import {
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { SettingsPageProvider } from '../../components/settings-page-context'
 import { LogSettingsSection } from '../log-settings-section'
@@ -43,6 +45,8 @@ function Fixture() {
           defaultValues={{
             LogConsumeEnabled: true,
             AdminAuditMode: 'billing_only',
+            LogExportMaxDays: 30,
+            LogExportFileRetentionHours: 24,
             'log_setting.user_export_enabled': true,
             'log_setting.max_range_days': 30,
           }}
@@ -67,6 +71,11 @@ async function renderSettings() {
 }
 
 beforeEach(() => {
+  useAuthStore.getState().auth.setUser({
+    id: 1,
+    username: 'root',
+    role: ROLE.SUPER_ADMIN,
+  })
   vi.spyOn(api, 'get').mockImplementation(async (url) => ({
     data: {
       success: true,
@@ -79,7 +88,11 @@ beforeEach(() => {
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
 })
 
-test('the page shows the four log modules in order, each with its own controls', async () => {
+afterEach(() => {
+  useAuthStore.setState(useAuthStore.getInitialState(), true)
+})
+
+test('recording, export and cleanup modules share the log settings page', async () => {
   await renderSettings()
 
   expect(
@@ -88,6 +101,7 @@ test('the page shows the four log modules in order, each with its own controls',
     'Log recording',
     'Log search and export',
     'Clean history logs',
+    'Clean audit logs',
     'Server Log Management',
   ])
   const recording = screen.getByRole('group', { name: 'Log recording' })
@@ -96,6 +110,15 @@ test('the page shows the four log modules in order, each with its own controls',
     within(recording).getByRole('switch', { name: 'Record quota usage' })
   ).toBeVisible()
   const search = screen.getByRole('group', { name: 'Log search and export' })
+  expect(
+    within(search).getByRole('spinbutton', { name: 'Max export range (days)' })
+  ).toHaveValue(30)
+  expect(
+    within(search).getByRole('spinbutton', { name: 'File retention (hours)' })
+  ).toHaveValue(24)
+  expect(
+    screen.getAllByRole('button', { name: 'Save log settings' })
+  ).toHaveLength(1)
   expect(
     within(search).getByRole('switch', { name: 'Allow users to export logs' })
   ).toBeVisible()
@@ -151,7 +174,7 @@ test('confirming a history cleanup starts the task and shows its progress in tha
   ).toBeDisabled()
 })
 
-test('saving sends only the log export settings that changed', async () => {
+test('one save applies changed search and export settings together', async () => {
   const user = userEvent.setup()
   const days = await renderSettings()
   expect(days).toHaveValue(30)
@@ -160,9 +183,17 @@ test('saving sends only the log export settings that changed', async () => {
     screen.getByRole('switch', { name: 'Allow users to export logs' })
   )
   fireEvent.change(days, { target: { value: '90' } })
+  fireEvent.change(
+    screen.getByRole('spinbutton', { name: 'Max export range (days)' }),
+    { target: { value: '60' } }
+  )
+  fireEvent.change(
+    screen.getByRole('spinbutton', { name: 'File retention (hours)' }),
+    { target: { value: '48' } }
+  )
   await user.click(screen.getByRole('button', { name: 'Save log settings' }))
 
-  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(4))
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'log_setting.user_export_enabled',
     value: false,
@@ -170,6 +201,14 @@ test('saving sends only the log export settings that changed', async () => {
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'log_setting.max_range_days',
     value: 90,
+  })
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'LogExportMaxDays',
+    value: 60,
+  })
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'LogExportFileRetentionHours',
+    value: 48,
   })
 })
 

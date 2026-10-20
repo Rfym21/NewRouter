@@ -91,7 +91,10 @@ export function auditFieldLabel(key: string, t: TFunction): string {
     case 'changed':
       return t('State changed')
     case 'count':
+    case 'deleted_count':
       return t('Count')
+    case 'target_timestamp':
+      return t('Before')
     case 'total':
       return t('Total')
     case 'requested_redemption_ids':
@@ -554,6 +557,18 @@ export function buildAuditDetails(
         : t('Never expires'),
     })
     delete params.expires_at
+  }
+  if (
+    action === 'audit_log.clear' &&
+    typeof params.target_timestamp === 'number' &&
+    Number.isSafeInteger(params.target_timestamp) &&
+    params.target_timestamp > 0
+  ) {
+    fields.push({
+      label: auditFieldLabel('target_timestamp', t),
+      value: dayjs.unix(params.target_timestamp).format('YYYY-MM-DD HH:mm:ss'),
+    })
+    delete params.target_timestamp
   }
   if (
     entry.category === 'access_token' &&

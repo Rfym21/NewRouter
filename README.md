@@ -4,11 +4,20 @@ https://github.com/Rfym21/WorkSpace/tree/main/Projects/NewRouter (Current)
 
 https://github.com/QuantumNous/new-api (Upstream)
 
-当前同步基准：官方 `main` 的 Commit(`7de10f2c602b50122017556e8a09cb7c488c273c`)，同步日期 2026-10-14。
+当前同步基准：官方 `main` 的 Commit(`32e587406c6ebe891f18ab9aeb2f4a1f6b7b9e14`)，同步日期 2026-10-20。
 
 最初基于 Commit(`4e570389dd433a717373ce9c9b822b59f5ed3d5d`) 二次开发。
 
-本次同步包含上次基准 `633b4c5b` 之后的 5 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享，以及自定义前端。
+本次同步包含上次基准 `7de10f2c` 之后的 30 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享，以及自定义前端。
+
+- 支持 DeepSeek V4.1 Flash、Search / Fetch 接口及推理参数，加入对应搜索、抓取和时段计费。
+- AWS 渠道增加 Mantle Messages API；Vertex API Key 模式支持 Project ID，并修复 `us` / `eu` 多区域地址。
+- Hailuo、Vidu、Veo 视频插件支持 New API 渠道；修复 Vidu 参数覆盖导致的计费不一致，并升级 moejs 到 alpha.7。
+- 渠道列表支持拖拽调整优先级，预览、移动和撤销均遵循管理员渠道标签权限。
+- 邮件支持 Resend；各类通知可独立开关，修复通知限流窗口和低余额提醒重复发送。
+- 修复 Claude 缓存计费、分组限流、容器过载判断及流式请求准备和重试期间的保活，并保留自定义去匿名化与计费设置。
+- 日志维护与导出设置整合到 `/system-settings/operations/logs`，旧导出设置地址自动跳转。超级管理员可按时间清除审计记录，操作需要绑定该时间的单次身份验证，完成后保留清除事件；使用日志继续独立维护。
+- 更新检测与发布说明链接使用 `Rfym21/NewRouter` 的 GitHub Releases，并隔离旧上游版本缓存。
 
 日志导出统一使用 New Router 的选列弹窗，提供后台压缩 CSV 任务和直接下载 CSV。后台任务保留导出记录、过期清理、分享及管理功能，复用官方逐行读取与日志列表筛选逻辑，避免按 ID 分页在 ClickHouse 下遗漏记录；两种导出均跟随当前视图范围和上游请求 ID 筛选，并补充缓存读写、流式和请求 ID 列及 CSV 公式转义。
 

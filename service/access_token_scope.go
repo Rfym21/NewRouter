@@ -238,6 +238,7 @@ func AccessTokenScopeGranted(scopes []string, scope string) bool {
 var accessTokenVerificationScopes = map[string]string{
 	VerificationScopeChannelKeyRead:        AccessTokenScopeOf(authz.ChannelSecretView),
 	VerificationScopeChannelKeyExport:      "",
+	VerificationScopeAuditLogClear:         "",
 	VerificationScopeAdminUserCreate:       AccessTokenScopeOf(authz.UserWrite),
 	VerificationScopeAdminUserUpdate:       AccessTokenScopeOf(authz.UserWrite),
 	VerificationScopeAdminUserDelete:       AccessTokenScopeOf(authz.UserDelete),

@@ -24,12 +24,11 @@ const (
 	ModelRequestRateLimitSuccessCountMark = "MRRLS"
 )
 
-func applyRedisModelRateLimit(c *gin.Context, duration int64, totalMaxCount, successMaxCount int) {
-	userID := strconv.Itoa(c.GetInt("id"))
+func applyRedisModelRateLimit(c *gin.Context, subject string, duration int64, totalMaxCount, successMaxCount int) {
 	ctx, cancel := redisRateLimitContext()
 	defer cancel()
 
-	successKey := fmt.Sprintf("rateLimit:%s:%s", ModelRequestRateLimitSuccessCountMark, userID)
+	successKey := fmt.Sprintf("rateLimit:%s:%s", ModelRequestRateLimitSuccessCountMark, subject)
 	successAllowed, successMember, err := redisSlidingWindowReserve(
 		ctx,
 		successKey,
@@ -48,7 +47,7 @@ func applyRedisModelRateLimit(c *gin.Context, duration int64, totalMaxCount, suc
 	}
 
 	if totalMaxCount > 0 {
-		totalKey := fmt.Sprintf("rateLimit:%s", userID)
+		totalKey := fmt.Sprintf("rateLimit:%s", subject)
 		tokenBucket := limiter.New(ctx, common.RDB)
 		allowed, err := tokenBucket.Allow(
 			ctx,
@@ -82,11 +81,10 @@ func applyRedisModelRateLimit(c *gin.Context, duration int64, totalMaxCount, suc
 	c.Next()
 }
 
-func applyMemoryModelRateLimit(c *gin.Context, duration int64, totalMaxCount, successMaxCount int) {
+func applyMemoryModelRateLimit(c *gin.Context, subject string, duration int64, totalMaxCount, successMaxCount int) {
 	inMemoryRateLimiter.Init(time.Duration(duration) * time.Second)
-	userID := strconv.Itoa(c.GetInt("id"))
-	totalKey := ModelRequestRateLimitCountMark + userID
-	successKey := ModelRequestRateLimitSuccessCountMark + userID
+	totalKey := ModelRequestRateLimitCountMark + subject
+	successKey := ModelRequestRateLimitSuccessCountMark + subject
 
 	if totalMaxCount > 0 && !inMemoryRateLimiter.Request(totalKey, totalMaxCount, duration) {
 		abortWithOpenAiMessage(c, http.StatusTooManyRequests, i18n.T(c, i18n.MsgRateLimitTotalReached, map[string]any{"Minutes": duration / 60, "Max": totalMaxCount}))
@@ -135,23 +133,34 @@ func ModelRequestRateLimit() func(c *gin.Context) {
 			group = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 		}
 
+		// Independently configured groups count separately; other groups share the user limit.
+		subject := strconv.Itoa(userID)
 		groupTotalCount, groupSuccessCount, found := setting.GetGroupRateLimit(group)
 		if found {
 			totalMaxCount = groupTotalCount
 			successMaxCount = groupSuccessCount
+			subject += ":" + group
 		}
 
 		userTotalCount, userSuccessCount, found := setting.GetUserRateLimit(userID, group)
 		if found {
 			totalMaxCount = userTotalCount
 			successMaxCount = userSuccessCount
+			// A user+group override also has its own counter. A default user rule
+			// continues to share the global counter unless the group is independent.
+			setting.ModelRequestRateLimitMutex.RLock()
+			_, groupOverride := setting.ModelRequestRateLimitUser[strconv.Itoa(userID)][group]
+			setting.ModelRequestRateLimitMutex.RUnlock()
+			if group != "" && groupOverride {
+				subject = strconv.Itoa(userID) + ":" + group
+			}
 		}
 
 		if common.RedisEnabled {
-			applyRedisModelRateLimit(c, duration, totalMaxCount, successMaxCount)
+			applyRedisModelRateLimit(c, subject, duration, totalMaxCount, successMaxCount)
 			return
 		}
-		applyMemoryModelRateLimit(c, duration, totalMaxCount, successMaxCount)
+		applyMemoryModelRateLimit(c, subject, duration, totalMaxCount, successMaxCount)
 	}
 }
 

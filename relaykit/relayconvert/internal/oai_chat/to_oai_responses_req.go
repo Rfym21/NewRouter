@@ -10,6 +10,7 @@ import (
 	"github.com/samber/lo"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/relayconvert/internal/convdiag"
+	relaymedia "new-router/relaykit/relayconvert/internal/media"
 	kitutil "new-router/relaykit/relayconvert/kitutil"
 	"new-router/relaykit/relayconvert/reasoning"
 )
@@ -227,9 +228,14 @@ func ChatCompletionsRequestToResponsesRequest(ctx context.Context, req *dto.Gene
 					"text": part.Text,
 				})
 			case dto.ContentTypeImageURL:
+				var sourceDetail string
+				if img := part.GetImageMedia(); img != nil {
+					sourceDetail = img.Detail
+				}
 				contentParts = append(contentParts, map[string]any{
 					"type":      "input_image",
 					"image_url": normalizeChatImageURLToString(part.ImageUrl),
+					"detail":    relaymedia.ResponsesImageDetail(sourceDetail),
 				})
 			case dto.ContentTypeInputAudio:
 				contentParts = append(contentParts, map[string]any{

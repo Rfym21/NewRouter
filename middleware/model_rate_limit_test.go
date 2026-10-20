@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"new-router/constant"
 	"new-router/i18n"
 	relaycommon "new-router/relay/common"
+	"new-router/setting"
 )
 
 func TestModelRedisRateLimitUsesUTCRegardlessOfLocalTimezone(t *testing.T) {
@@ -52,14 +54,14 @@ func TestModelRateLimitStreamFailuresDoNotConsumeSuccessLimit(t *testing.T) {
 	for _, backend := range []string{"memory", "redis"} {
 		for _, totalLimit := range []int{0, 2} {
 			t.Run(fmt.Sprintf("%s/total=%d", backend, totalLimit), func(t *testing.T) {
-				userID := 7200000 + int(modelRateLimitTestUsers.Add(1))
-				handler := func(c *gin.Context) { applyMemoryModelRateLimit(c, 60, totalLimit, 1) }
+				subject := strconv.Itoa(7200000 + int(modelRateLimitTestUsers.Add(1)))
+				handler := func(c *gin.Context) { applyMemoryModelRateLimit(c, subject, 60, totalLimit, 1) }
 				if backend == "redis" {
 					useRateLimitMiniRedis(t)
-					handler = func(c *gin.Context) { applyRedisModelRateLimit(c, 60, totalLimit, 1) }
+					handler = func(c *gin.Context) { applyRedisModelRateLimit(c, subject, 60, totalLimit, 1) }
 				}
 				router := gin.New()
-				router.GET("/:outcome", func(c *gin.Context) { c.Set("id", userID) }, handler, func(c *gin.Context) {
+				router.GET("/:outcome", handler, func(c *gin.Context) {
 					status := relaycommon.NewStreamStatus()
 					if c.Param("outcome") == "failed" {
 						status.MarkFailed("server_error", "", 0)
@@ -83,10 +85,10 @@ func TestModelRateLimitStreamFailuresDoNotConsumeSuccessLimit(t *testing.T) {
 
 func TestModelMemoryRateLimitReservesConcurrentSuccessAdmission(t *testing.T) {
 	require.NoError(t, i18n.Init())
-	userID := 7200000 + int(modelRateLimitTestUsers.Add(1))
+	subject := strconv.Itoa(7200000 + int(modelRateLimitTestUsers.Add(1)))
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	router := gin.New()
-	router.GET("/:outcome", func(c *gin.Context) { c.Set("id", userID) }, func(c *gin.Context) { applyMemoryModelRateLimit(c, 60, 0, 1) }, func(c *gin.Context) {
+	router.GET("/:outcome", func(c *gin.Context) { applyMemoryModelRateLimit(c, subject, 60, 0, 1) }, func(c *gin.Context) {
 		if c.Param("outcome") == "failed" {
 			close(entered)
 			<-release
@@ -121,14 +123,11 @@ func TestModelMemoryRateLimitRejectionsReturnOpenAIError(t *testing.T) {
 		{name: "success", successLimit: 1, messageKey: i18n.MsgRateLimitReached},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			userID := 7200000 + int(modelRateLimitTestUsers.Add(1))
+			subject := strconv.Itoa(7200000 + int(modelRateLimitTestUsers.Add(1)))
 			router := gin.New()
 			router.GET("/", func(c *gin.Context) {
-				c.Set("id", userID)
 				c.Set(common.RequestIdKey, "req-limited")
-			}, func(c *gin.Context) {
-				applyMemoryModelRateLimit(c, 60, tc.totalLimit, tc.successLimit)
-			}, func(c *gin.Context) {
+			}, func(c *gin.Context) { applyMemoryModelRateLimit(c, subject, 60, tc.totalLimit, tc.successLimit) }, func(c *gin.Context) {
 				c.Status(http.StatusOK)
 			})
 			require.Equal(t, http.StatusOK, performRateLimitRequest(router, "/", "127.0.0.1:1000").Code)
@@ -143,6 +142,110 @@ func TestModelMemoryRateLimitRejectionsReturnOpenAIError(t *testing.T) {
 			}})
 			require.NoError(t, err)
 			assert.JSONEq(t, string(want), resp.Body.String())
+		})
+	}
+}
+
+// A group with its own limit counts each user's requests on its own; groups
+// without one keep sharing the user's global limit.
+func TestModelRateLimitCountsConfiguredGroupsSeparately(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	previousEnabled, previousMinutes := setting.ModelRequestRateLimitEnabled, setting.ModelRequestRateLimitDurationMinutes
+	previousTotal, previousSuccess := setting.ModelRequestRateLimitCount, setting.ModelRequestRateLimitSuccessCount
+	previousGroups, previousRedisEnabled := setting.ModelRequestRateLimitGroup, common.RedisEnabled
+	t.Cleanup(func() {
+		setting.ModelRequestRateLimitEnabled, setting.ModelRequestRateLimitDurationMinutes = previousEnabled, previousMinutes
+		setting.ModelRequestRateLimitCount, setting.ModelRequestRateLimitSuccessCount = previousTotal, previousSuccess
+		setting.ModelRequestRateLimitGroup, common.RedisEnabled = previousGroups, previousRedisEnabled
+	})
+	setting.ModelRequestRateLimitEnabled, setting.ModelRequestRateLimitDurationMinutes = true, 1
+	common.RedisEnabled = false
+
+	// Groups a and b have their own limits; c and d have none and share the global one.
+	steps := []struct {
+		group string
+		want  int
+	}{
+		{"a", http.StatusOK}, {"a", http.StatusTooManyRequests},
+		{"b", http.StatusOK}, {"b", http.StatusTooManyRequests},
+		{"c", http.StatusOK}, {"d", http.StatusTooManyRequests},
+	}
+	// The Redis token bucket binds to the first Redis client it sees and another
+	// test already drives it, so the total limit runs on the memory backend only.
+	for _, tc := range []struct {
+		backend, limit string
+		counts         [2]int // [total, success] for groups a and b and for the global limit
+	}{
+		{"memory", "success", [2]int{0, 1}},
+		{"redis", "success", [2]int{0, 1}},
+		{"memory", "total", [2]int{1, 1000}},
+	} {
+		t.Run(tc.backend+"/"+tc.limit, func(t *testing.T) {
+			if tc.backend == "redis" {
+				useRateLimitMiniRedis(t)
+			}
+			setting.ModelRequestRateLimitCount, setting.ModelRequestRateLimitSuccessCount = tc.counts[0], tc.counts[1]
+			setting.ModelRequestRateLimitGroup = map[string][2]int{"a": tc.counts, "b": tc.counts}
+			userID := 7200000 + int(modelRateLimitTestUsers.Add(1))
+			router := gin.New()
+			router.GET("/:group", func(c *gin.Context) {
+				c.Set("id", userID)
+				common.SetContextKey(c, constant.ContextKeyTokenGroup, c.Param("group"))
+			}, ModelRequestRateLimit(), func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			})
+
+			for _, step := range steps {
+				assert.Equal(t, step.want, performRateLimitRequest(router, "/"+step.group, "127.0.0.1:1000").Code, "group %s", step.group)
+			}
+		})
+	}
+}
+
+// User+group rules override group rules and reserve independent counters;
+// the user's default rule remains shared across groups without their own rule.
+func TestModelRateLimitUserOverridesAndGroupCounters(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	previousEnabled, previousMinutes := setting.ModelRequestRateLimitEnabled, setting.ModelRequestRateLimitDurationMinutes
+	previousTotal, previousSuccess := setting.ModelRequestRateLimitCount, setting.ModelRequestRateLimitSuccessCount
+	previousGroups, previousUsers := setting.ModelRequestRateLimitGroup, setting.ModelRequestRateLimitUser
+	previousRedisEnabled := common.RedisEnabled
+	t.Cleanup(func() {
+		setting.ModelRequestRateLimitEnabled, setting.ModelRequestRateLimitDurationMinutes = previousEnabled, previousMinutes
+		setting.ModelRequestRateLimitCount, setting.ModelRequestRateLimitSuccessCount = previousTotal, previousSuccess
+		setting.ModelRequestRateLimitGroup, setting.ModelRequestRateLimitUser = previousGroups, previousUsers
+		common.RedisEnabled = previousRedisEnabled
+	})
+	setting.ModelRequestRateLimitEnabled, setting.ModelRequestRateLimitDurationMinutes = true, 1
+	setting.ModelRequestRateLimitCount, setting.ModelRequestRateLimitSuccessCount = 0, 1000
+	for _, backend := range []string{"memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			common.RedisEnabled = false
+			if backend == "redis" {
+				useRateLimitMiniRedis(t)
+			}
+			userID := 7200000 + int(modelRateLimitTestUsers.Add(1))
+			setting.ModelRequestRateLimitGroup = map[string][2]int{"a": {0, 1}, "b": {0, 1}}
+			setting.ModelRequestRateLimitUser = map[string]map[string][2]int{
+				strconv.Itoa(userID): {"a": {0, 2}, "x": {0, 1}, "y": {0, 1}, "*": {0, 1}},
+			}
+			router := gin.New()
+			router.GET("/:group", func(c *gin.Context) {
+				c.Set("id", userID)
+				common.SetContextKey(c, constant.ContextKeyTokenGroup, c.Param("group"))
+			}, ModelRequestRateLimit(), func(c *gin.Context) { c.Status(http.StatusOK) })
+			for _, step := range []struct {
+				group string
+				want  int
+			}{
+				{"a", http.StatusOK}, {"a", http.StatusOK}, {"a", http.StatusTooManyRequests},
+				{"b", http.StatusOK}, {"b", http.StatusTooManyRequests},
+				{"x", http.StatusOK}, {"x", http.StatusTooManyRequests},
+				{"y", http.StatusOK}, {"y", http.StatusTooManyRequests},
+				{"c", http.StatusOK}, {"d", http.StatusTooManyRequests},
+			} {
+				assert.Equal(t, step.want, performRateLimitRequest(router, "/"+step.group, "127.0.0.1:1000").Code, "group %s", step.group)
+			}
 		})
 	}
 }

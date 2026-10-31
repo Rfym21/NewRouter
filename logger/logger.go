@@ -73,6 +73,23 @@ func SetupLogger() {
 	}
 }
 
+// CloseLogger releases the current file after shutdown and restores console output.
+func CloseLogger() error {
+	setupLogLock.Lock()
+	defer setupLogLock.Unlock()
+	currentLogPathMu.Lock()
+	defer currentLogPathMu.Unlock()
+	common.LogWriterMu.Lock()
+	defer common.LogWriterMu.Unlock()
+	gin.DefaultWriter, gin.DefaultErrorWriter = os.Stdout, os.Stderr
+	file := currentLogFile
+	currentLogFile, currentLogPath = nil, ""
+	if file != nil {
+		return file.Close()
+	}
+	return nil
+}
+
 func LogInfo(ctx context.Context, msg string) {
 	logHelper(ctx, loggerINFO, msg)
 }

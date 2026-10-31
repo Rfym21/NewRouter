@@ -1158,7 +1158,9 @@ func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOther
 		return jsonData, nil
 	}
 
-	var data map[string]any
+	// Only top-level members are decoded: nested values keep the client's
+	// bytes and key order, which upstreams follow when they fill a schema.
+	var data map[string]json.RawMessage
 	if err := common.Unmarshal(jsonData, &data); err != nil {
 		common.SysError(common.LogText("RemoveDisabledFields Unmarshal error :%s", err.Error()))
 		return jsonData, nil
@@ -1191,15 +1193,16 @@ func hasRemovableDisabledField(jsonData []byte, channelOtherSettings dto.Channel
 	return false
 }
 
-// removeJSONPath deletes a dotted object path and prunes parent objects that become empty.
-func removeJSONPath(data map[string]interface{}, path string) {
+// removeJSONPath deletes a dotted object path and prunes empty parents.
+// Decode only the affected objects so nested JSON Schemas retain their bytes.
+func removeJSONPath(data map[string]json.RawMessage, path string) {
 	if data == nil || path == "" {
 		return
 	}
 	removeJSONPathRecursive(data, strings.Split(path, "."))
 }
 
-func removeJSONPathRecursive(node map[string]interface{}, parts []string) bool {
+func removeJSONPathRecursive(node map[string]json.RawMessage, parts []string) bool {
 	if len(parts) == 0 {
 		return false
 	}
@@ -1210,19 +1213,23 @@ func removeJSONPathRecursive(node map[string]interface{}, parts []string) bool {
 		delete(node, parts[0])
 		return true
 	}
-	child, exists := node[parts[0]]
-	if !exists {
+	var child map[string]json.RawMessage
+	if err := common.Unmarshal(node[parts[0]], &child); err != nil || child == nil {
 		return false
 	}
-	childMap, ok := child.(map[string]interface{})
-	if !ok {
+	if !removeJSONPathRecursive(child, parts[1:]) {
 		return false
 	}
-	removed := removeJSONPathRecursive(childMap, parts[1:])
-	if removed && len(childMap) == 0 {
+	if len(child) == 0 {
 		delete(node, parts[0])
+		return true
 	}
-	return removed
+	encoded, err := common.Marshal(child)
+	if err != nil {
+		return false
+	}
+	node[parts[0]] = encoded
+	return true
 }
 
 // RemoveGeminiDisabledFields removes disabled fields from Gemini request JSON data

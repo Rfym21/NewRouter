@@ -45,8 +45,17 @@ func TestVeoLegacyFlatBillingKeepsMetadataDurationAnd4KMultiplier(t *testing.T) 
 			plugin, err := pluginruntime.NewRegistry().RegisterFactory(source, pluginruntime.Options{Key: key})
 			require.NoError(t, err)
 			adaptor := New(plugin)
-			require.NoError(t, adaptor.validateResolvedUsageRequest(map[string]any{"metadata": map[string]any{"resolution": "4K"}}))
-			require.Error(t, adaptor.validateResolvedUsageRequest(map[string]any{"metadata": map[string]any{"resolution": "8K"}}))
+			validateResolution := func(resolution string) error {
+				_, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+					"model": "veo-3.1-fast-generate-preview",
+					"body": map[string]any{"kind": "json", "value": map[string]any{
+						"metadata": map[string]any{"resolution": resolution},
+					}},
+				})
+				return err
+			}
+			require.NoError(t, validateResolution("4K"))
+			require.Error(t, validateResolution("8K"))
 			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "veo-3.1-fast-generate-preview"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest("POST", "/v1/videos", nil)

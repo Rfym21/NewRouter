@@ -22,7 +22,7 @@ import userEvent from '@testing-library/user-event'
 import { AxiosError } from 'axios'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
-import { api } from '@/lib/api'
+import { api, type ApiRequestConfig } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { VendorMutateDialog } from '../components/dialogs/vendor-mutate-dialog'
@@ -259,7 +259,7 @@ describe('vendor management', () => {
     let finishPage: ((value: unknown) => void) | undefined
     const get = vi
       .spyOn(api, 'get')
-      .mockImplementation(async (_url, config) => {
+      .mockImplementation(async (_url, config?: ApiRequestConfig) => {
         if (config?.params?.p === 2) {
           return new Promise((resolve) => {
             finishPage = resolve

@@ -27,3 +27,17 @@ func RelayPanicRecover() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// PanicRecover is the server-wide panic recovery. Gin logs the panic stack
+// through common.ErrorLogWriter so it reaches the current log file.
+func PanicRecover() gin.HandlerFunc {
+	return gin.CustomRecoveryWithWriter(common.ErrorLogWriter, func(c *gin.Context, err any) {
+		common.SysLog(common.LogText("panic detected: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{
+				"message": fmt.Sprintf("Panic detected, error: %v. Please submit an issue here: https://github.com/Rfym21/WorkSpace/issues", err),
+				"type":    "new_router_panic",
+			},
+		})
+	})
+}

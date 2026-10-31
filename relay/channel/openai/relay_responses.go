@@ -112,13 +112,18 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					if setErr != nil {
 						patched = data
 					}
-					sendResponsesStreamData(c, info, streamResponse, patched)
+					if err := sendResponsesStreamData(c, info, streamResponse, patched); err != nil {
+						sr.Stop(err)
+					}
 				}
 				return
 			case "response.output_text.done", "response.reasoning_summary_text.done":
 				// Emit the held tail (in order) before the terminal-per-part event,
 				// whose `text` carries the full value and is restored below.
-				emitResponsesResidual(c, info, restorer, responsesStreamKey(&streamResponse))
+				if err := emitResponsesResidual(c, info, restorer, responsesStreamKey(&streamResponse)); err != nil {
+					sr.Stop(err)
+					return
+				}
 			}
 		}
 
@@ -127,17 +132,30 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				data = deanonData
 			}
 		}
-		sendResponsesStreamData(c, info, streamResponse, data)
+		completed := (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done") &&
+			streamResponse.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted)
+		if completed && restorer != nil {
+			if err := flushResponsesResiduals(c, info, restorer); err != nil {
+				sr.Stop(err)
+				return
+			}
+		}
+		if err := sendResponsesStreamData(c, info, streamResponse, data); err != nil {
+			sr.Stop(err)
+			return
+		}
+		if completed {
+			sr.Done()
+		}
 	})
 
 	// Safety net: flush any residual held tail when the stream ended without a
 	// matching *.done event (truncated/abnormal end). On a normal stream the
 	// per-part flush above already emptied the carry.
 	if restorer != nil {
-		keys := restorer.PendingKeys()
-		sort.Strings(keys)
-		for _, key := range keys {
-			emitResponsesResidual(c, info, restorer, key)
+		if err := flushResponsesResiduals(c, info, restorer); err != nil {
+			info.StreamStatus.RecordError(err.Error())
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonHandlerStop, err)
 		}
 	}
 
@@ -184,14 +202,14 @@ func responsesStreamKey(r *dto.ResponsesStreamResponse) string {
 // emitResponsesResidual flushes the held tail for key and, if non-empty, emits it
 // as a synthetic *.delta event carrying the same item_id/index so clients splice
 // it into the correct stream.
-func emitResponsesResidual(c *gin.Context, info *relaycommon.RelayInfo, restorer *anonymizer.StreamRestorer, key string) {
+func emitResponsesResidual(c *gin.Context, info *relaycommon.RelayInfo, restorer *anonymizer.StreamRestorer, key string) error {
 	residual := restorer.Flush(key)
 	if residual == "" {
-		return
+		return nil
 	}
 	parts := strings.Split(key, "\x00")
 	if len(parts) != 4 {
-		return
+		return nil
 	}
 	out, _ := strconv.Atoi(parts[2])
 	sub, _ := strconv.Atoi(parts[3])
@@ -205,7 +223,18 @@ func emitResponsesResidual(c *gin.Context, info *relaycommon.RelayInfo, restorer
 	}
 	body, err := common.Marshal(ev)
 	if err != nil {
-		return
+		return err
 	}
-	sendResponsesStreamData(c, info, ev, string(body))
+	return sendResponsesStreamData(c, info, ev, string(body))
+}
+
+func flushResponsesResiduals(c *gin.Context, info *relaycommon.RelayInfo, restorer *anonymizer.StreamRestorer) error {
+	keys := restorer.PendingKeys()
+	sort.Strings(keys)
+	for _, key := range keys {
+		if err := emitResponsesResidual(c, info, restorer, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }

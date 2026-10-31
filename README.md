@@ -4,11 +4,20 @@ https://github.com/Rfym21/WorkSpace/tree/main/Projects/NewRouter (Current)
 
 https://github.com/QuantumNous/new-api (Upstream)
 
-当前同步基准：官方 `main` 的 Commit(`32e587406c6ebe891f18ab9aeb2f4a1f6b7b9e14`)，同步日期 2026-10-20。
+当前同步基准：官方 `main` 的 Commit(`1424ffdd4aef28812a0e9309a465453cbdd034e4`)，同步日期 2026-10-31。
 
 最初基于 Commit(`4e570389dd433a717373ce9c9b822b59f5ed3d5d`) 二次开发。
 
-本次同步包含上次基准 `7de10f2c` 之后的 30 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享，以及自定义前端。
+本次同步包含上次基准 `32e587406` 之后的 74 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享、审计日志二次验证清除，以及自定义前端。
+
+- 任务插件支持供应商原生路径、原生响应和流式接口，补充 multipart 请求及客户端请求头传递；共享插件接口可参与普通渠道选择，保留按插件前缀访问的方式。
+- 修复 Claude 缓存写入计费，支持 OpenAI 12 小时缓存写入及 `cc12h` 表达式；任务每次重试重新预扣，价格同步可按本站汇率乘除调整。
+- 改善 Claude、Gemini、OpenAI Responses 的工具调用和 JSON Schema 转换，修复已完成流误判断开、大事件向慢客户端传输时截断，以及非流式请求取消后的计费。
+- 支持阿里多模态 embedding，修复 Kling 单 API Key 和视频时长、尺寸处理，默认任务超时调整为 72 小时。
+- 仪表盘加入缓存读写用量，插件界面提示缺少计费价格的模型；修复编辑抽屉残留字段、退出后重复请求、侧边栏可见性及 Turnstile 设置保存。
+- 加入请求解压内存限制、访问日志凭据脱敏和任务查询跳转凭据保护，修复日志轮转写入；升级 Go、Bun、DOMPurify、图表库及其他依赖。
+
+此前同步的功能继续保留：
 
 - 支持 DeepSeek V4.1 Flash、Search / Fetch 接口及推理参数，加入对应搜索、抓取和时段计费。
 - AWS 渠道增加 Mantle Messages API；Vertex API Key 模式支持 Project ID，并修复 `us` / `eu` 多区域地址。
@@ -27,6 +36,6 @@ https://github.com/QuantumNous/new-api (Upstream)
 - 日志支持直接 CSV 下载、查询时间范围设置和消息国际化；原有异步压缩导出、分享及管理员管理继续保留。
 - 更新日期时间选择、字体、图标、渠道刷新、用户分组筛选、账号独立 Playground 数据及相关依赖。
 
-构建需要 Go 1.26 或更高版本。旧面板访问令牌在新版首次启动后有 30 天迁移期；可在安全设置中创建新的权限令牌。默认消息和服务端日志语言可通过 `DEFAULT_LANGUAGE` 设置。
+构建需要 Go 1.26.10 或更高版本，前端使用 Bun 1.4.4。旧面板访问令牌在新版首次启动后有 30 天迁移期；可在安全设置中创建新的权限令牌。默认消息和服务端日志语言可通过 `DEFAULT_LANGUAGE` 设置。
 
 GitHub Actions 支持手动运行，或在 `main` 分支的 `VERSION` 文件变化时，编译六个平台的可执行文件、发布 GitHub Releases，并推送 Linux 双架构镜像到 GHCR。触发方式、版本格式和镜像使用方法见 [编译与发布说明](.github/README.md)。

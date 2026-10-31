@@ -19,11 +19,12 @@ import (
 
 type reservedTaskBilling struct{}
 
-func (reservedTaskBilling) Settle(int) error         { return nil }
-func (reservedTaskBilling) Refund(*gin.Context)      {}
-func (reservedTaskBilling) NeedsRefund() bool        { return false }
-func (reservedTaskBilling) GetPreConsumedQuota() int { return 1 }
-func (reservedTaskBilling) Reserve(int) error        { return nil }
+func (reservedTaskBilling) Settle(int) error              { return nil }
+func (reservedTaskBilling) Refund(*gin.Context)           {}
+func (reservedTaskBilling) NeedsRefund() bool             { return false }
+func (reservedTaskBilling) GetPreConsumedQuota() int      { return 1 }
+func (reservedTaskBilling) Reserve(int) error             { return nil }
+func (reservedTaskBilling) ReserveBeforeSubmit(int) error { return nil }
 
 func TestTaskFixedExpressionRestrictionPreservesLegacyPerRequestPrice(t *testing.T) {
 	const modelName = "wan2.7-t2v"

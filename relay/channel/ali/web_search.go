@@ -10,7 +10,7 @@ import (
 	"new-router/relaykit/relayconvert/convmeta"
 	"new-router/relaykit/types"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // DashScope web-search tool-price keys (search_strategy_* prices in
@@ -86,13 +86,13 @@ func encodeWebSearch(info *relaycommon.RelayInfo) convmeta.WebSearchEncoder {
 // aliResponsesToolUsage bills Responses web search by the count DashScope
 // reports in usage.x_tools.web_search.count (terminal frames carry it under
 // response.usage) and silences the web_search_call items under the protocol
-// keys. gjson truncates fractional values and reads non-numbers as zero;
+// keys. ojson truncates fractional values and reads non-numbers as zero;
 // SetBillableToolCount ignores negatives and settlement applies
 // MaxBillableToolCallCount.
 func aliResponsesToolUsage(raw []byte) map[string]int {
-	count := gjson.GetBytes(raw, "usage.x_tools.web_search.count")
+	count := ojson.GetBytes(raw, "usage.x_tools.web_search.count")
 	if !count.Exists() {
-		count = gjson.GetBytes(raw, "response.usage.x_tools.web_search.count")
+		count = ojson.GetBytes(raw, "response.usage.x_tools.web_search.count")
 	}
 	if !count.Exists() {
 		return nil

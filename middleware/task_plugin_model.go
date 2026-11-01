@@ -5,8 +5,8 @@ import (
 	"mime"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/sjson"
 	"new-router/common"
 )
 
@@ -28,7 +28,7 @@ func rewriteTaskPluginJSONModel(c *gin.Context, spelling string) error {
 	if err != nil {
 		return err
 	}
-	patched, err := sjson.SetBytes(raw, "model", spelling)
+	patched, err := ojson.SetBytes(raw, "model", spelling)
 	if err != nil {
 		return err
 	}

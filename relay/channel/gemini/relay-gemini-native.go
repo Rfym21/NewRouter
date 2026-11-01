@@ -18,9 +18,8 @@ import (
 	"new-router/relaykit/types"
 	"new-router/service"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -40,7 +39,7 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
+	info.ObserveResponseModel(ojson.GetBytes(responseBody, "modelVersion").Str)
 	var grounding geminiGroundingCounter
 	grounding.observe(&geminiResponse)
 	grounding.commit(info)
@@ -142,7 +141,7 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 // deanonymizeGeminiNativeChunk restores anonymized values in one native Gemini
 // stream chunk, reassembling surrogates split across chunks via the carry buffer.
 // Only candidates[].content.parts[].text is routed through the buffer (keyed by
-// candidate index + thought flag); it edits those fields via sjson so all other
+// candidate index + thought flag); it edits those fields via ojson so all other
 // upstream fields (usageMetadata, modelVersion, safetyRatings, …) are preserved
 // verbatim. A nil restorer falls back to the stateless whole-chunk restore.
 func deanonymizeGeminiNativeChunk(c *gin.Context, data string, restorer *anonymizer.StreamRestorer) (string, error) {
@@ -152,7 +151,7 @@ func deanonymizeGeminiNativeChunk(c *gin.Context, data string, restorer *anonymi
 	if anonymizer.FromContext(c) == nil {
 		return data, nil
 	}
-	candidates := gjson.Get(data, "candidates")
+	candidates := ojson.Get(data, "candidates")
 	if !candidates.IsArray() {
 		return deanonymizeResponseString(c, data)
 	}
@@ -168,7 +167,7 @@ func deanonymizeGeminiNativeChunk(c *gin.Context, data string, restorer *anonymi
 		}
 		for pi, part := range parts.Array() {
 			tv := part.Get("text")
-			if tv.Type != gjson.String {
+			if tv.Type != ojson.String {
 				continue
 			}
 			field := "content"
@@ -177,7 +176,7 @@ func deanonymizeGeminiNativeChunk(c *gin.Context, data string, restorer *anonymi
 			}
 			flushed := restorer.Push(strconv.Itoa(idx)+":"+field, tv.String())
 			path := "candidates." + strconv.Itoa(ci) + ".content.parts." + strconv.Itoa(pi) + ".text"
-			if patched, err := sjson.Set(out, path, flushed); err == nil {
+			if patched, err := ojson.Set(out, path, flushed); err == nil {
 				out = patched
 			}
 		}
@@ -195,10 +194,10 @@ func buildGeminiNativeResidual(key string, residual string) (string, bool) {
 	idx, _ := strconv.Atoi(key[:sep])
 	field := key[sep+1:]
 	chunk := `{"candidates":[{"content":{"parts":[{}],"role":"model"},"index":0}]}`
-	chunk, _ = sjson.Set(chunk, "candidates.0.index", idx)
-	chunk, _ = sjson.Set(chunk, "candidates.0.content.parts.0.text", residual)
+	chunk, _ = ojson.Set(chunk, "candidates.0.index", idx)
+	chunk, _ = ojson.Set(chunk, "candidates.0.content.parts.0.text", residual)
 	if field == "reasoning" {
-		chunk, _ = sjson.Set(chunk, "candidates.0.content.parts.0.thought", true)
+		chunk, _ = ojson.Set(chunk, "candidates.0.content.parts.0.thought", true)
 	}
 	return chunk, true
 }

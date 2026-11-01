@@ -18,9 +18,8 @@ import (
 	"new-router/relaykit/types"
 	"new-router/service"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -108,7 +107,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				flush := restorer.Push(responsesStreamKey(&streamResponse), rawDelta)
 				if flush != "" {
 					streamResponse.Delta = flush
-					patched, setErr := sjson.Set(data, "delta", flush)
+					patched, setErr := ojson.Set(data, "delta", flush)
 					if setErr != nil {
 						patched = data
 					}
@@ -168,10 +167,10 @@ func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte
 	if info.GetChannelType() != constant.ChannelTypeSGLang {
 		return payload
 	}
-	if !gjson.GetBytes(payload, path).Exists() {
+	if !ojson.GetBytes(payload, path).Exists() {
 		return payload
 	}
-	patched, err := sjson.SetBytes(payload, path, int(createdAt))
+	patched, err := ojson.SetBytes(payload, path, int(createdAt))
 	if err != nil {
 		return payload
 	}

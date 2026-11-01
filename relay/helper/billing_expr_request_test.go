@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 	"new-router/common"
 	relaycommon "new-router/relay/common"
 	"new-router/relaykit/dto"
@@ -57,7 +57,7 @@ func TestBuildBillingExprRequestInputFromRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "application/json", input.Headers["Content-Type"])
 	require.Equal(t, "1", input.Headers["X-Test"])
-	require.True(t, gjson.GetBytes(input.Body, "stream").Bool())
-	require.Equal(t, "user", gjson.GetBytes(input.Body, "messages.0.role").String())
-	require.Equal(t, float64(3000), gjson.GetBytes(input.Body, "max_tokens").Float())
+	require.True(t, ojson.GetBytes(input.Body, "stream").Bool())
+	require.Equal(t, "user", ojson.GetBytes(input.Body, "messages.0.role").String())
+	require.Equal(t, float64(3000), ojson.GetBytes(input.Body, "max_tokens").Float())
 }

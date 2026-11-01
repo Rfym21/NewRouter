@@ -17,8 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 	"new-router/common"
 	"new-router/constant"
 	"new-router/dto"
@@ -704,8 +704,8 @@ func jsonBodyBoolFlags(c *gin.Context) (stream, background bool) {
 	if err != nil {
 		return false, false
 	}
-	values := gjson.GetManyBytes(requestBody, "stream", "background")
-	return values[0].Type == gjson.True, values[1].Type == gjson.True
+	values := ojson.GetManyBytes(requestBody, "stream", "background")
+	return values[0].Type == ojson.True, values[1].Type == ojson.True
 }
 
 func unsupportedProtocolFormMessage(candidates []pluginruntime.ProtocolBinding, protocol string, stream, background bool) string {

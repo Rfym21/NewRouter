@@ -7,7 +7,7 @@ import (
 	"new-router/relaykit/relayconvert/convmeta"
 	"new-router/relaykit/types"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // zhipuSearchEngine is the documented default search_engine. It is also the
@@ -77,7 +77,7 @@ func encodeWebSearch(info *relaycommon.RelayInfo) convmeta.WebSearchEncoder {
 // response carries the top-level web_search result array. The array lists
 // results, not searches, so its length is not a count.
 func zhipuChatToolUsage(raw []byte) map[string]int {
-	results := gjson.GetBytes(raw, "web_search")
+	results := ojson.GetBytes(raw, "web_search")
 	if !results.IsArray() || len(results.Array()) == 0 {
 		return nil
 	}

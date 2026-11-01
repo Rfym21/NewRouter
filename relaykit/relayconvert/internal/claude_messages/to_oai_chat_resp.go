@@ -6,8 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/reasonmap"
 	sharedclaude "new-router/relaykit/relayconvert/internal/shared/claude"
@@ -482,12 +481,12 @@ func setMessageDeltaUsageInt(data string, path string, localValue int) string {
 		return data
 	}
 
-	upstreamValue := gjson.Get(data, path)
+	upstreamValue := ojson.Get(data, path)
 	if upstreamValue.Exists() && upstreamValue.Int() > 0 {
 		return data
 	}
 
-	patchedData, err := sjson.Set(data, path, localValue)
+	patchedData, err := ojson.Set(data, path, localValue)
 	if err != nil {
 		return data
 	}

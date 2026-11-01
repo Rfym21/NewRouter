@@ -3,7 +3,7 @@ package claude
 import (
 	"encoding/json"
 
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
 	kitutil "new-router/relaykit/relayconvert/kitutil"
 )
 
@@ -31,12 +31,12 @@ func FunctionParametersToInputSchema(parameters json.RawMessage) (schema json.Ra
 	schema = parameters
 	var err error
 	if len(fields.Type) == 0 || kitutil.GetJsonType(fields.Type) == "null" {
-		if schema, err = sjson.SetRawBytes(schema, "type", []byte(`"object"`)); err != nil {
+		if schema, err = ojson.SetRawBytes(schema, "type", []byte(`"object"`)); err != nil {
 			return empty, false
 		}
 	}
 	if len(fields.Properties) == 0 || kitutil.GetJsonType(fields.Properties) == "null" {
-		if schema, err = sjson.SetRawBytes(schema, "properties", []byte(`{}`)); err != nil {
+		if schema, err = ojson.SetRawBytes(schema, "properties", []byte(`{}`)); err != nil {
 			return empty, false
 		}
 	}

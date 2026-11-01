@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 	"new-router/common"
 	"new-router/constant"
 	relaycommon "new-router/relay/common"
@@ -1079,7 +1079,7 @@ func TestAdaptorConvertsClaudeAndGeminiRequestsToResponsesUpstream(t *testing.T)
 				require.NoError(t, err)
 				wire, err := common.Marshal(converted)
 				require.NoError(t, err)
-				assert.JSONEq(t, `[{"type":"web_search"}]`, gjson.GetBytes(wire, "tools").Raw)
+				assert.JSONEq(t, `[{"type":"web_search"}]`, ojson.GetBytes(wire, "tools").Raw)
 				url, err := adaptor.GetRequestURL(info)
 				require.NoError(t, err)
 				assert.Equal(t, "https://fallback.example/v1/responses", url)

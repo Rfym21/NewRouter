@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -13,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/base64"
 	"new-router/common"
 	"new-router/constant"
 	"new-router/logger"

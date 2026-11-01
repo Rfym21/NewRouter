@@ -4,11 +4,17 @@ https://github.com/Rfym21/WorkSpace/tree/main/Projects/NewRouter (Current)
 
 https://github.com/QuantumNous/new-api (Upstream)
 
-当前同步基准：官方 `main` 的 Commit(`1424ffdd4aef28812a0e9309a465453cbdd034e4`)，同步日期 2026-10-31。
+当前同步基准：官方 `main` 的 Commit(`70e6af6429824f99de98e96e65254c8c2ef7ee0b`)，同步日期 2026-11-02。
 
 最初基于 Commit(`4e570389dd433a717373ce9c9b822b59f5ed3d5d`) 二次开发。
 
-本次同步包含上次基准 `32e587406` 之后的 74 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享、审计日志二次验证清除，以及自定义前端。
+本次同步包含上次基准 `1424ffdd4` 之后的 4 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享、审计日志二次验证清除，以及自定义前端。
+
+- 原生插件路由已向客户端转发流式事件后，补扣额度或写入任务失败时不再全额退款，改为按实际额度结算并记录消费日志；Kling 4.0 现金扣费按返回的 `list_price` 计费。
+- Vertex AI 渠道支持 Gemini Omni Flash 视频生成，Veo 继续使用 New Router 的时长读取和 4K 预扣倍率。
+- 请求 JSON 的读取和改写改用 moego，base64 处理同步替换；参数覆盖、禁用字段过滤、Responses WebSocket、AWS Mantle 与透传请求只改动目标字段，其余字段保留客户端原有顺序和写法，重复出现的键会全部移除或改写。禁用字段过滤继续遵循渠道请求体字段规则。
+
+此前同步的功能继续保留：
 
 - 任务插件支持供应商原生路径、原生响应和流式接口，补充 multipart 请求及客户端请求头传递；共享插件接口可参与普通渠道选择，保留按插件前缀访问的方式。
 - 修复 Claude 缓存写入计费，支持 OpenAI 12 小时缓存写入及 `cc12h` 表达式；任务每次重试重新预扣，价格同步可按本站汇率乘除调整。
@@ -16,9 +22,6 @@ https://github.com/QuantumNous/new-api (Upstream)
 - 支持阿里多模态 embedding，修复 Kling 单 API Key 和视频时长、尺寸处理，默认任务超时调整为 72 小时。
 - 仪表盘加入缓存读写用量，插件界面提示缺少计费价格的模型；修复编辑抽屉残留字段、退出后重复请求、侧边栏可见性及 Turnstile 设置保存。
 - 加入请求解压内存限制、访问日志凭据脱敏和任务查询跳转凭据保护，修复日志轮转写入；升级 Go、Bun、DOMPurify、图表库及其他依赖。
-
-此前同步的功能继续保留：
-
 - 支持 DeepSeek V4.1 Flash、Search / Fetch 接口及推理参数，加入对应搜索、抓取和时段计费。
 - AWS 渠道增加 Mantle Messages API；Vertex API Key 模式支持 Project ID，并修复 `us` / `eu` 多区域地址。
 - Hailuo、Vidu、Veo 视频插件支持 New API 渠道；修复 Vidu 参数覆盖导致的计费不一致，并升级 moejs 到 alpha.7。

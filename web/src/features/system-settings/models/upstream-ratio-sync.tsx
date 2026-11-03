@@ -113,8 +113,11 @@ export function UpstreamRatioSync() {
   >({})
   const [differences, setDifferences] = useState<DifferencesMap>({})
   const [prices, setPrices] = useState<PricingSyncModels>({})
+  const [localModels, setLocalModels] = useState<
+    Record<string, PricingSyncValues>
+  >({})
   const [selections, setSelections] = useState<
-    Record<string, { source: string; adjustment: PriceAdjustment }>
+    Record<string, PricingSourceSelection & { adjustment: PriceAdjustment }>
   >({})
   const selectedSources = useMemo(
     () =>
@@ -160,7 +163,7 @@ export function UpstreamRatioSync() {
         Object.entries(selections).map(([model, entry]) => [
           model,
           adjustSyncPrice(
-            prices[model]?.upstreams[entry.source] ?? {},
+            entry.values ?? prices[model]?.upstreams[entry.source] ?? {},
             entry.adjustment,
             rate
           ),
@@ -198,6 +201,7 @@ export function UpstreamRatioSync() {
     },
     onMutate: () => {
       setPrices({})
+      setLocalModels({})
       setDifferences({})
       setSelections({})
     },
@@ -219,6 +223,7 @@ export function UpstreamRatioSync() {
       }
       setDifferences(response.data.differences)
       setPrices(response.data.prices)
+      setLocalModels(response.data.local_models ?? {})
       if (!Object.keys(response.data.prices).length) {
         toast.success(t('No price differences found'))
       }
@@ -232,6 +237,14 @@ export function UpstreamRatioSync() {
       return confirmed.resolutions
     },
     onSuccess: async (saved) => {
+      setLocalModels((previous) =>
+        Object.fromEntries(
+          Object.entries(previous).map(([name, current]) => [
+            name,
+            saved[name] ?? current,
+          ])
+        )
+      )
       setPrices((previous) =>
         Object.fromEntries(
           Object.entries(previous).map(([name, row]) => [
@@ -290,9 +303,11 @@ export function UpstreamRatioSync() {
       setSelections((previous) => {
         const next = { ...previous }
         for (const entry of selected) {
-          if (!prices[entry.model]?.upstreams[entry.source]) continue
+          const values =
+            entry.values ?? prices[entry.model]?.upstreams[entry.source]
+          if (!values) continue
           if (next[entry.model]?.source === entry.source) continue
-          next[entry.model] = { source: entry.source, adjustment: 'keep' }
+          next[entry.model] = { ...entry, values, adjustment: 'keep' }
         }
         return next
       })
@@ -324,8 +339,8 @@ export function UpstreamRatioSync() {
     const conflicts: ConflictItem[] = []
     for (const [model, entry] of Object.entries(selections)) {
       const selected = adjustedPrices[model]?.values
-      const row = prices[model]
-      if (!row || !selected) return
+      const current = entry.current ?? prices[model]?.current
+      if (!current || !selected) return
       resolutions[model] = selected
       let adjustment = t('Keep source price')
       if (entry.adjustment === 'divide') {
@@ -340,8 +355,13 @@ export function UpstreamRatioSync() {
       }
       conflicts.push({
         model,
-        channel: getUpstreamDisplayName(entry.source, t),
-        current: describeSyncPrice(row.current, t),
+        channel: [
+          getUpstreamDisplayName(entry.sourceName ?? entry.source, t),
+          ...(entry.upstreamModel && entry.upstreamModel !== model
+            ? [entry.upstreamModel]
+            : []),
+        ].join(' · '),
+        current: describeSyncPrice(current, t),
         newVal: describeSyncPrice(selected, t),
         adjustment,
         siteVal:
@@ -432,6 +452,7 @@ export function UpstreamRatioSync() {
               </Button>
             }
             prices={prices}
+            localModels={localModels}
             differences={differences}
             selectedSources={selectedSources}
             adjustments={adjustments}

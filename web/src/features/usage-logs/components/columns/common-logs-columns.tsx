@@ -55,6 +55,7 @@ import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { LOG_TYPE_ALL_VALUE } from '../../constants'
 import type { UsageLog } from '../../data/schema'
+import { getAnonymizationCount } from '../../lib/anonymization'
 import {
   formatModelName,
   decodeBillingExprB64,
@@ -73,6 +74,7 @@ import {
   isPerCallBilling,
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
+import { AnonymizationBadge } from '../anonymization-badge'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
@@ -898,6 +900,21 @@ export function useCommonLogsColumns(
         maxSize: 200,
       }
     )
+
+    columns.push({
+      id: 'anonymization_count',
+      header: t('Anonymization'),
+      accessorFn: (log) => getAnonymizationCount(parseLogOther(log.other)),
+      cell: ({ getValue }) => {
+        const count = getValue<number>()
+        return count > 0 ? (
+          <AnonymizationBadge count={count} />
+        ) : (
+          <span className='text-muted-foreground/40'>—</span>
+        )
+      },
+      size: 140,
+    })
 
     return columns
     // Log formatters read currency settings from the store.

@@ -27,6 +27,8 @@ import { Button } from '@/components/ui/button'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { LogColumnOptions } from '../../components/log-column-options'
+import { useLogColumnMasking } from '../../lib/column-masking'
 import { getAuditLogs, type AuditFilters, type AuditLog } from '../api'
 import { useAuditLogColumns } from './audit-log-columns'
 import { AuditLogFilterBar } from './audit-log-filter-bar'
@@ -75,9 +77,16 @@ export function AuditLogViewer(props: {
   useEffect(() => {
     if (accessDenied) void onAccessDenied?.()
   }, [accessDenied, onAccessDenied])
-  const columns = useAuditLogColumns(props.accessOnly)
+  const originalColumns = useAuditLogColumns(props.accessOnly)
+  const storageScope = `${userId ?? 'guest'}:${props.scope}:${props.accessOnly ? 'access' : 'audit'}`
+  const masking = useLogColumnMasking(
+    originalColumns,
+    `usage-logs:${storageScope}:content-masking:v1`
+  )
+  const columns = masking.columns
   const { table } = useDataTable({
     columns,
+    columnVisibilityStorageKey: `usage-logs:${storageScope}:column-visibility`,
     data:
       canQuery && !query.isError
         ? (query.data?.items ?? EMPTY_LOGS)
@@ -128,6 +137,9 @@ export function AuditLogViewer(props: {
           <div className='shrink-0 space-y-2'>
             <AuditLogFilterBar
               table={table}
+              columnOptions={
+                <LogColumnOptions table={table} masking={masking} />
+              }
               filters={filters}
               onChange={update}
               scope={props.scope}

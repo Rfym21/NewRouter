@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"new-router/common"
+	"new-router/model"
 	"new-router/relaykit/dto"
 	"new-router/setting/billing_setting"
 	"new-router/setting/config"
@@ -68,6 +69,13 @@ func TestRatioConfigExportsEffectiveExpressions(t *testing.T) {
 }
 
 func TestPricingSyncCompleteSourcesAndArrayFormats(t *testing.T) {
+	database := modelManagementDB(t, "sqlite", "")
+	require.NoError(t, database.Create(&model.Channel{Id: 700, Name: "local", Status: common.ChannelStatusManuallyDisabled}).Error)
+	require.NoError(t, database.Create(&model.Ability{ChannelId: 700, Model: "gpt-6.1-sol", Group: "default", Enabled: false}).Error)
+	require.NoError(t, database.Create(&model.Model{ModelName: "catalogued", NameRule: model.NameRuleExact}).Error)
+	require.NoError(t, database.Create(&model.Model{ModelName: "gpt-", NameRule: model.NameRulePrefix}).Error)
+	require.NoError(t, database.Create(&model.Model{ModelName: "deleted-catalogued", NameRule: model.NameRuleExact}).Error)
+	require.NoError(t, database.Where("model_name = ?", "deleted-catalogued").Delete(&model.Model{}).Error)
 	before := config.GlobalConfig.ExportAllConfigs()
 	oldRatios, oldCompletion := ratio_setting.ModelRatio2JSONString(), ratio_setting.CompletionRatio2JSONString()
 	t.Cleanup(func() {
@@ -111,6 +119,7 @@ func TestPricingSyncCompleteSourcesAndArrayFormats(t *testing.T) {
 	var response struct {
 		Success bool
 		Data    struct {
+			LocalModels map[string]map[string]any `json:"local_models"`
 			Differences map[string]map[string]dto.DifferenceItem
 			Prices      map[string]struct {
 				Current   map[string]any
@@ -125,6 +134,11 @@ func TestPricingSyncCompleteSourcesAndArrayFormats(t *testing.T) {
 	}}
 	recorder := modelManagementRequest(t, FetchUpstreamRatios, http.MethodPost, "/api/channel/fetch_upstream_ratios", body, &response)
 	require.True(t, response.Success, recorder.Body.String())
+	assert.Equal(t, map[string]any{}, response.Data.LocalModels["gpt-6.1-sol"], "an unpriced channel model is still local, including disabled channels")
+	assert.Contains(t, response.Data.LocalModels, "catalogued")
+	assert.NotContains(t, response.Data.LocalModels, "gpt-")
+	assert.NotContains(t, response.Data.LocalModels, "deleted-catalogued")
+	assert.NotContains(t, response.Data.LocalModels, "sync-token", "price maps alone do not establish local model membership")
 	require.Len(t, response.Data.TestResults, 2)
 	for _, result := range response.Data.TestResults {
 		require.Equal(t, "success", result.Status, result.Error)

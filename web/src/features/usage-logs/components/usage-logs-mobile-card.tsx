@@ -49,6 +49,7 @@ interface UsageLogsMobileListProps<TData> {
   emptyTitle?: string
   emptyDescription?: string
   logCategory: LogCategory
+  maskedColumns?: ReadonlySet<string>
 }
 
 function UsageLogsMobileSkeleton(props: { separate: boolean }) {
@@ -242,6 +243,7 @@ export function UsageLogsMobileList<TData>({
   emptyTitle,
   emptyDescription,
   logCategory,
+  maskedColumns,
 }: UsageLogsMobileListProps<TData>) {
   const { t } = useTranslation()
 
@@ -304,6 +306,7 @@ export function UsageLogsMobileList<TData>({
               <CommonLogMobileCard
                 log={row.original as UsageLog}
                 cells={cells}
+                maskedColumns={maskedColumns}
               />
             )}
             {logCategory === 'task' && <TaskLogsCard cells={cells} />}

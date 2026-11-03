@@ -574,6 +574,15 @@ func FetchUpstreamRatios(c *gin.Context) {
 	close(ch)
 
 	localData := effectivePricingSyncData(getLocalPricingSyncData())
+	localNames, err := model.GetPriceSyncModelNames()
+	if err != nil {
+		common.ApiErrorStatus(c, http.StatusInternalServerError, common.NewMessage("Failed to load local models"))
+		return
+	}
+	localModels := make(map[string]map[string]any, len(localNames))
+	for _, name := range localNames {
+		localModels[name] = modelPricingSyncValues(localData, name)
+	}
 
 	var testResults []dto.TestResult
 	var successfulChannels []struct {
@@ -650,6 +659,7 @@ func FetchUpstreamRatios(c *gin.Context) {
 		"data": gin.H{
 			"differences":  differences,
 			"prices":       prices,
+			"local_models": localModels,
 			"test_results": testResults,
 		},
 	})

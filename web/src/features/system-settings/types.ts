@@ -483,10 +483,12 @@ export type DifferencesMap = Record<
 >
 
 export type PricingSyncValues = Partial<Record<RatioType, number | string>>
-export type PricingSyncModels = Record<
-  string,
-  { current: PricingSyncValues; upstreams: Record<string, PricingSyncValues> }
->
+export type PricingSyncModel = {
+  current: PricingSyncValues
+  upstreams: Record<string, PricingSyncValues>
+  source_models?: Record<string, { source: string; model: string }>
+}
+export type PricingSyncModels = Record<string, PricingSyncModel>
 
 export type UpstreamChannelsResponse = {
   success: boolean
@@ -519,6 +521,7 @@ export type UpstreamRatiosResponse = {
   data: {
     differences: DifferencesMap
     prices: PricingSyncModels
+    local_models: Record<string, PricingSyncValues>
     test_results: TestResult[]
   }
 }

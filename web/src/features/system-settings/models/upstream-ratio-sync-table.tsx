@@ -41,7 +41,11 @@ import type { PricingCurrency } from '@/features/model-pricing/currency'
 import { useDebounce } from '@/hooks/use-debounce'
 import { useMediaQuery } from '@/hooks/use-media-query'
 
-import type { DifferencesMap, PricingSyncModels } from '../types'
+import type {
+  DifferencesMap,
+  PricingSyncModels,
+  PricingSyncValues,
+} from '../types'
 import type {
   PriceAdjustment,
   AdjustedSyncPrice,
@@ -50,8 +54,12 @@ import { SyncSourceHeader } from './upstream-price-cells'
 import { useUpstreamRatioSyncColumns } from './upstream-ratio-sync-columns'
 import {
   getSyncPriceKind,
+  getSyncSourceChoices,
+  matchLocalSyncPrices,
   sameSyncPrice,
+  syncPriceSelection,
   SyncPriceContext,
+  type PricingMatchMode,
   type PricingSourceSelection,
   type PricingSourceSelections,
 } from './upstream-ratio-sync-helpers'
@@ -60,9 +68,11 @@ export type PricingSyncRow = {
   model: string
   prices: PricingSyncModels[string]
   differences: DifferencesMap[string]
+  sourceConfidence?: Record<string, boolean>
 }
 type UpstreamRatioSyncTableProps = {
   prices: PricingSyncModels
+  localModels: Record<string, PricingSyncValues>
   adjustments?: Record<string, PriceAdjustment>
   adjustedPrices?: Record<string, AdjustedSyncPrice>
   currency?: PricingCurrency | null
@@ -83,11 +93,19 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
     'different'
   )
   const [kind, setKind] = useState('__all__')
+  const [matchMode, setMatchMode] = useState<PricingMatchMode>('exact')
   const showUnchanged = priceStatus === 'all'
   const debouncedSearch = useDebounce(search, 250)
+  const matchedPrices = useMemo(
+    () =>
+      priceStatus === 'all'
+        ? props.prices
+        : matchLocalSyncPrices(props.prices, props.localModels, matchMode),
+    [props.prices, props.localModels, matchMode, priceStatus]
+  )
   const rows = useMemo(
     () =>
-      Object.entries(props.prices)
+      Object.entries(matchedPrices)
         .filter(
           ([, values]) =>
             priceStatus === 'all' ||
@@ -102,9 +120,18 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
           model,
           prices,
           differences: props.differences[model],
+          sourceConfidence: Object.fromEntries(
+            Object.entries(prices.source_models ?? {}).map(([key, matched]) => [
+              key,
+              Object.values(props.differences[matched.model] ?? {}).every(
+                (difference) =>
+                  difference?.confidence?.[matched.source] !== false
+              ),
+            ])
+          ),
         }))
         .sort((a, b) => a.model.localeCompare(b.model)),
-    [props.prices, props.differences, priceStatus]
+    [matchedPrices, props.differences, priceStatus]
   )
   const filteredRows = useMemo(
     () =>
@@ -141,18 +168,19 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
     () =>
       Object.fromEntries(
         sourceNames.map((source) => {
-          const selections = filteredRows
-            .filter(
-              (row) =>
-                row.prices.upstreams[source] &&
-                (showUnchanged ||
-                  !sameSyncPrice(
-                    row.prices.current,
-                    row.prices.upstreams[source]
-                  ) ||
-                  props.selectedSources[row.model] === source)
-            )
-            .map((row) => ({ model: row.model, source }))
+          const selections = filteredRows.flatMap((row) => {
+            const choices = getSyncSourceChoices(row.prices, source)
+            if (choices.length !== 1) return []
+            const key = choices[0]
+            if (
+              !showUnchanged &&
+              sameSyncPrice(row.prices.current, row.prices.upstreams[key]) &&
+              props.selectedSources[row.model] !== key
+            ) {
+              return []
+            }
+            return [syncPriceSelection(row.model, row.prices, key)]
+          })
           return [
             source,
             {
@@ -189,6 +217,10 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
     { value: 'all', label: t('All models') },
     { value: 'unset', label: t('Only show models with unset prices') },
     { value: 'different', label: t('Only show models with different prices') },
+  ]
+  const matchingModes = [
+    { value: 'exact', label: t('Exact match') },
+    { value: 'fuzzy', label: t('Fuzzy match') },
   ]
   let content: ReactNode
   if (props.isSyncing) {
@@ -330,10 +362,46 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
               </SelectGroup>
             </SelectContent>
           </Select>
+          <Select
+            value={matchMode}
+            items={matchingModes}
+            onValueChange={(value) => {
+              if (value === 'exact' || value === 'fuzzy') {
+                setMatchMode(value)
+                table.setPageIndex(0)
+              }
+            }}
+            disabled={props.isDisabled || priceStatus === 'all'}
+          >
+            <SelectTrigger
+              className='w-40'
+              aria-label={t('Local model matching')}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {matchingModes.map((mode) => (
+                  <SelectItem value={mode.value} key={mode.value}>
+                    {mode.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
           <span className='text-muted-foreground text-xs sm:ml-auto'>
             USD / {t('1M token')}
           </span>
         </div>
+        {priceStatus !== 'all' && (
+          <p className='text-muted-foreground text-xs'>
+            {matchMode === 'exact'
+              ? t('Price filters use local models with the same name.')
+              : t(
+                  'Price filters use local models. Fuzzy matching ignores case and matches names containing one another; exact names take priority. Review each upstream offer before syncing.'
+                )}
+          </p>
+        )}
         {content}
         <div className='shrink-0 space-y-2'>
           {hiddenSelectionCount > 0 && (

@@ -78,6 +78,7 @@ import { cn } from '@/lib/utils'
 
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
+import { getAnonymizationCount } from '../../lib/anonymization'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
@@ -100,6 +101,7 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { AnonymizationBadge } from '../anonymization-badge'
 import { ResponseModelDetails } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
 import { DetailRow, DetailSection } from './log-detail-layout'
@@ -1161,6 +1163,14 @@ export function DetailsDialog(props: DetailsDialogProps) {
               />
             )}
           </DetailSection>
+        )}
+
+        {getAnonymizationCount(other) > 0 && (
+          <DetailRow
+            icon={<ShieldCheck className='size-3.5' aria-hidden='true' />}
+            label={t('Anonymization')}
+            value={<AnonymizationBadge count={getAnonymizationCount(other)} />}
+          />
         )}
 
         {/* Reasoning effort */}

@@ -7,6 +7,7 @@ import (
 	"new-router/constant"
 	"new-router/logger"
 	"new-router/model"
+	"new-router/pkg/anonymizer"
 	relaycommon "new-router/relay/common"
 	"new-router/relaykit/types"
 	"new-router/setting/operation_setting"
@@ -65,9 +66,10 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		return
 	}
 	upstreamURLs := common.UpstreamAddresses(c)
-	logger.LogError(c, common.LogText("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode(upstreamURLs...))))
+	redact := anonymizer.FromContext(c).LogRedactor()
+	logger.LogError(c, common.LogText("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(redact(err.MaskSensitiveErrorWithStatusCode(upstreamURLs...)))))
 	if ShouldDisableChannel(err) && channelError.AutoBan {
-		reason := err.MaskSensitiveErrorWithStatusCode(upstreamURLs...)
+		reason := redact(err.MaskSensitiveErrorWithStatusCode(upstreamURLs...))
 		gopool.Go(func() {
 			DisableChannel(channelError, reason)
 		})

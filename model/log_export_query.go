@@ -66,6 +66,11 @@ func getLogExportValue(log *Log, column string) string {
 		other = map[string]interface{}{}
 	}
 	switch column {
+	case "anonymization_count":
+		if count := toFloat64(other["anonymization_count"]); count > 0 {
+			return strconv.FormatFloat(count, 'f', 0, 64)
+		}
+		return ""
 	case "request_id":
 		return log.RequestId
 	case "stream":

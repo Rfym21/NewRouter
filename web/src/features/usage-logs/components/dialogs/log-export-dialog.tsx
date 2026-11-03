@@ -70,6 +70,7 @@ const COLUMN_DEFS: Array<{
   { key: 'cache_read', labelKey: 'Cache Read' },
   { key: 'cache_write', labelKey: 'Cache Write' },
   { key: 'request_id', labelKey: 'Request ID' },
+  { key: 'anonymization_count', labelKey: 'Anonymization' },
 ]
 
 const QUICK_RANGES: Array<{ labelKey: string; seconds: number }> = [
@@ -164,6 +165,7 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
       'use_time',
       'ip',
       'request_id',
+      'anonymization_count',
       'details',
       'retry',
     ]

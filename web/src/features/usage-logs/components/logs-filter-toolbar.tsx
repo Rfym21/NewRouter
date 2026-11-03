@@ -51,6 +51,7 @@ interface LogsFilterToolbarProps<TData> {
   stats?: ReactNode
   actionStart?: ReactNode
   actionEnd?: ReactNode
+  columnOptions?: ReactNode
   hasActiveFilters: boolean
   hasAdvancedActiveFilters?: boolean
   advancedFilterCount?: number
@@ -183,7 +184,9 @@ export function LogsFilterToolbar<TData>(props: LogsFilterToolbarProps<TData>) {
                 {t('Search')}
               </Button>
               {props.actionEnd}
-              <DataTableViewOptions table={props.table} />
+              {props.columnOptions ?? (
+                <DataTableViewOptions table={props.table} />
+              )}
             </>
           }
         >
@@ -287,7 +290,7 @@ export function LogsFilterToolbar<TData>(props: LogsFilterToolbarProps<TData>) {
             {t('Search')}
           </Button>
           {props.actionEnd}
-          <DataTableViewOptions table={props.table} />
+          {props.columnOptions ?? <DataTableViewOptions table={props.table} />}
         </div>
       </div>
     </div>

@@ -36,6 +36,7 @@ func TestAnonymizationDispatchUsesActualUpstreamFormat(t *testing.T) {
 			assert.NotContains(t, string(body), "alice@private.example")
 			session := anonymizer.FromContext(c)
 			require.NotNil(t, session)
+			assert.EqualValues(t, 1, session.ReplacementCount())
 			assert.Equal(t, "alice@private.example", session.Snapshot()[0].Original)
 			info.ChannelSetting.AnonymizationEnabled = common.GetPointer(false)
 			info.ChannelId++
@@ -43,6 +44,7 @@ func TestAnonymizationDispatchUsesActualUpstreamFormat(t *testing.T) {
 			require.NoError(t, err)
 			assert.JSONEq(t, tc.body, string(unmodified))
 			assert.Nil(t, anonymizer.FromContext(c), "a disabled retry cannot reuse another attempt's restoration context")
+			assert.Zero(t, anonymizer.FromContext(c).ReplacementCount(), "a successful disabled attempt cannot inherit an earlier count")
 		})
 	}
 }

@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 
 import type { UsageLog } from '../data/schema'
+import { getAnonymizationCount } from './anonymization'
 import { logTokenName, parseLogOther, renderLogContent } from './format'
 import {
   getLogTypeConfig,
@@ -50,6 +51,7 @@ export function getLogCsvHeader(isAdmin: boolean, t: Translate): string[] {
     t('Duration'),
     t('IP'),
     t('Request ID'),
+    t('Anonymization'),
     t('Details'),
   ]
 }
@@ -90,6 +92,9 @@ export function getLogCsvRow(
     isTimingLogType(log.type) ? `${log.use_time ?? 0}s` : '',
     log.ip ?? '',
     log.request_id ?? '',
+    getAnonymizationCount(other) > 0
+      ? String(getAnonymizationCount(other))
+      : '',
     renderLogContent(other, t) ?? log.content ?? '',
   ]
 }

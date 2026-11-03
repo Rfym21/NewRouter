@@ -44,10 +44,11 @@ import { adjustSyncPrice } from '../models/upstream-price-adjustment'
 import { UpstreamRatioSync } from '../models/upstream-ratio-sync'
 import {
   getSyncPriceLines,
+  matchLocalSyncPrices,
   type PricingSourceSelections,
 } from '../models/upstream-ratio-sync-helpers'
 import { UpstreamRatioSyncTable } from '../models/upstream-ratio-sync-table'
-import type { PricingSyncModels } from '../types'
+import type { DifferencesMap, PricingSyncModels } from '../types'
 
 const expression = 'tier("base", p * 2 + c * 8 + cr * 0)'
 const differences = {
@@ -77,13 +78,26 @@ const prices: PricingSyncModels = {
     },
   },
 }
-function TableFixture(props: { prices: PricingSyncModels }) {
+function TableFixture(props: {
+  prices: PricingSyncModels
+  localModels?: Record<string, PricingSyncModels[string]['current']>
+  differences?: DifferencesMap
+}) {
   const [selectedSources, setSelectedSources] =
     useState<PricingSourceSelections>({})
   return (
     <UpstreamRatioSyncTable
       prices={props.prices}
-      differences={differences}
+      localModels={
+        props.localModels ??
+        Object.fromEntries(
+          Object.entries(props.prices).map(([model, row]) => [
+            model,
+            row.current,
+          ])
+        )
+      }
+      differences={props.differences ?? differences}
       selectedSources={selectedSources}
       isDisabled={false}
       isSyncing={false}
@@ -119,6 +133,152 @@ afterEach(() => {
   useSystemConfigStore
     .getState()
     .setConfig({ currency: DEFAULT_CURRENCY_CONFIG })
+})
+
+describe('local model price matching', () => {
+  const upstream: PricingSyncModels = {
+    'gpt-6.1-sol': { current: {}, upstreams: { upstream: { model_ratio: 1 } } },
+    'gpt-6.1-sol-fast': {
+      current: {},
+      upstreams: { upstream: { model_ratio: 2 } },
+    },
+    'upstream-only': {
+      current: {},
+      upstreams: { upstream: { model_ratio: 9 } },
+    },
+  }
+
+  it('limits both price-status filters to local models, while all models retains upstream-only results', async () => {
+    render(
+      <TableFixture prices={upstream} localModels={{ 'gpt-6.1-sol': {} }} />
+    )
+    const user = userEvent.setup()
+    expect(screen.getByText('gpt-6.1-sol')).toBeVisible()
+    expect(screen.queryByText('upstream-only')).not.toBeInTheDocument()
+    await selectPriceStatus(user, 'Only show models with unset prices')
+    expect(screen.getByText('gpt-6.1-sol')).toBeVisible()
+    expect(screen.queryByText('upstream-only')).not.toBeInTheDocument()
+    await selectPriceStatus(user, 'All models')
+    expect(screen.getByText('upstream-only')).toBeVisible()
+  })
+
+  it('prefers exact offers per source and never introduces unrelated upstream models', () => {
+    const rows = matchLocalSyncPrices(upstream, { 'gpt-6.1-sol': {} }, 'fuzzy')
+    expect(Object.keys(rows)).toEqual(['gpt-6.1-sol'])
+    expect(rows['gpt-6.1-sol'].upstreams).toEqual({
+      upstream: { model_ratio: 1 },
+    })
+    expect(rows['gpt-6.1-sol'].source_models?.upstream.model).toBe(
+      'gpt-6.1-sol'
+    )
+    expect(matchLocalSyncPrices(upstream, {}, 'fuzzy')).toEqual({})
+  })
+
+  it('matches case-insensitive containment while retaining expression mode and zero prices', () => {
+    const candidates: PricingSyncModels = {
+      'GPT-6.1-SOL-fast': {
+        current: {},
+        upstreams: { upstream: { model_ratio: 2 } },
+      },
+    }
+    expect(
+      matchLocalSyncPrices(candidates, { 'gpt-6.1-sol': {} }, 'exact')
+    ).toEqual({})
+    expect(
+      matchLocalSyncPrices(candidates, { 'gpt-6.1-sol': {} }, 'fuzzy')[
+        'gpt-6.1-sol'
+      ].upstreams.upstream.model_ratio
+    ).toBe(2)
+    expect(
+      matchLocalSyncPrices(
+        candidates,
+        {
+          'gpt-6.1-sol': {
+            billing_mode: 'tiered_expr',
+            billing_expr: expression,
+          },
+        },
+        'fuzzy'
+      )
+    ).toEqual({})
+    expect(
+      matchLocalSyncPrices(
+        upstream,
+        { 'gpt-6.1-sol': { model_ratio: 0 } },
+        'exact'
+      )['gpt-6.1-sol'].current.model_ratio
+    ).toBe(0)
+  })
+
+  it('shows multiple fuzzy offers explicitly and prevents ambiguous source-wide selection', async () => {
+    const candidates: PricingSyncModels = {
+      'gpt-6.1-sol-fast': {
+        current: {},
+        upstreams: { upstream: { model_ratio: 2 } },
+      },
+      'gpt-6.1-sol-preview': {
+        current: {},
+        upstreams: { upstream: { model_ratio: 3 } },
+      },
+    }
+    render(
+      <TableFixture prices={candidates} localModels={{ 'gpt-6.1-sol': {} }} />
+    )
+    const user = userEvent.setup()
+    expect(screen.queryByText('gpt-6.1-sol')).not.toBeInTheDocument()
+    await user.click(
+      screen.getByRole('combobox', { name: 'Local model matching' })
+    )
+    await user.click(screen.getByRole('option', { name: 'Fuzzy match' }))
+    expect(screen.getByText('gpt-6.1-sol')).toBeVisible()
+    expect(screen.getByText('Upstream model: gpt-6.1-sol-fast')).toBeVisible()
+    expect(
+      screen.getByText('Upstream model: gpt-6.1-sol-preview')
+    ).toBeVisible()
+    expect(
+      screen.getByRole('checkbox', { name: 'Select all prices from upstream' })
+    ).toHaveAttribute('aria-disabled', 'true')
+    const fast = screen.getByRole('checkbox', {
+      name: 'Select price for gpt-6.1-sol from upstream · gpt-6.1-sol-fast',
+    })
+    const preview = screen.getByRole('checkbox', {
+      name: 'Select price for gpt-6.1-sol from upstream · gpt-6.1-sol-preview',
+    })
+    await user.click(fast)
+    expect(fast).toBeChecked()
+    await user.click(preview)
+    expect(preview).toBeChecked()
+    expect(fast).not.toBeChecked()
+  })
+
+  it('preserves upstream confidence warnings when a fuzzy offer targets a different local name', async () => {
+    render(
+      <TableFixture
+        prices={{
+          'gpt-6.1-sol-preview': {
+            current: {},
+            upstreams: { upstream: { model_ratio: 2 } },
+          },
+        }}
+        localModels={{ 'gpt-6.1-sol': {} }}
+        differences={{
+          'gpt-6.1-sol-preview': {
+            model_ratio: {
+              current: null,
+              upstreams: { upstream: 2 },
+              confidence: { upstream: false },
+            },
+          },
+        }}
+      />
+    )
+    const user = userEvent.setup()
+    await user.click(
+      screen.getByRole('combobox', { name: 'Local model matching' })
+    )
+    await user.click(screen.getByRole('option', { name: 'Fuzzy match' }))
+    expect(screen.getByText('Verify upstream pricing')).toBeVisible()
+  })
 })
 
 describe('pricing synchronization', () => {
@@ -560,6 +720,9 @@ describe('pricing synchronization', () => {
               },
             },
           },
+          local_models: {
+            m: { model_ratio: 1, completion_ratio: 2, billing_mode: 'ratio' },
+          },
           test_results: [{ name: 'Upstream(7)', status: 'success' }],
         },
       },
@@ -832,7 +995,13 @@ async function renderAdjustmentSync(
       },
     },
     c: { current: {}, upstreams: { 'Upstream(7)': { model_price: 21 } } },
-  }
+  },
+  localModels: Record<
+    string,
+    PricingSyncModels[string]['current']
+  > = Object.fromEntries(
+    Object.entries(candidates).map(([model, row]) => [model, row.current])
+  )
 ) {
   useSystemConfigStore.getState().setConfig({
     currency: {
@@ -867,6 +1036,7 @@ async function renderAdjustmentSync(
       success: true,
       data: {
         prices: candidates,
+        local_models: localModels,
         differences: {},
         test_results: [{ name: 'Upstream(7)', status: 'success' }],
       },
@@ -896,6 +1066,44 @@ async function renderAdjustmentSync(
   )
   return { user, patch }
 }
+
+it('saves a selected fuzzy offer only to its existing local model', async () => {
+  const { user, patch } = await renderAdjustmentSync(
+    {
+      'gpt-6.1-sol-preview': {
+        current: {},
+        upstreams: { 'Upstream(7)': { model_price: 7 } },
+      },
+      'upstream-only': {
+        current: {},
+        upstreams: { 'Upstream(7)': { model_price: 8 } },
+      },
+    },
+    { 'gpt-6.1-sol': {} }
+  )
+  await user.click(
+    screen.getByRole('combobox', { name: 'Local model matching' })
+  )
+  await user.click(screen.getByRole('option', { name: 'Fuzzy match' }))
+  await user.click(
+    screen.getByRole('checkbox', {
+      name: 'Select price for gpt-6.1-sol from Upstream(7) · gpt-6.1-sol-preview',
+    })
+  )
+  await selectPriceStatus(user, 'All models')
+  expect(screen.getByText('Selected models hidden by filters: 1')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Apply Sync' }))
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('gpt-6.1-sol')
+  expect(screen.getByRole('alertdialog')).toHaveTextContent(
+    'gpt-6.1-sol-preview'
+  )
+  await user.click(screen.getByRole('button', { name: 'Confirm Changes' }))
+  await waitFor(() => expect(patch).toHaveBeenCalled())
+  expect(patch.mock.calls[0][1]).toMatchObject({
+    changes: [{ model_name: 'gpt-6.1-sol', expected_version: 'empty' }],
+  })
+  expect(patch.mock.calls[0][1]).toHaveProperty('changes.length', 1)
+})
 
 it('applies bulk changes only to existing selections, allows row overrides and saves the frozen preview', async () => {
   const { user, patch } = await renderAdjustmentSync()

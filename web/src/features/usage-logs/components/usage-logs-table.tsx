@@ -43,11 +43,13 @@ import {
   LOG_TYPE_ENUM,
 } from '../constants'
 import { shouldShowBillingSource } from '../lib/billing-source'
+import { useLogColumnMasking } from '../lib/column-masking'
 import { useColumnsByCategory } from '../lib/columns'
 import { parseLogOther } from '../lib/format'
 import { fetchLogsByCategory } from '../lib/utils'
 import type { LogCategory } from '../types'
 import { CommonLogsFilterBar } from './common-logs-filter-bar'
+import { LogColumnOptions } from './log-column-options'
 import { TaskLogsFilterBar } from './task-logs-filter-bar'
 import { UsageLogsMobileList } from './usage-logs-mobile-card'
 import {
@@ -70,9 +72,10 @@ const quotaSaturationRowTint = 'bg-amber-50/60 dark:bg-amber-950/25'
 
 function getColumnVisibilityStorageKey(
   logCategory: LogCategory,
-  viewAccess: LogsViewAccess
+  viewAccess: LogsViewAccess,
+  userId: number | undefined
 ): string {
-  return `usage-logs:${logCategory}:${viewAccess}:column-visibility`
+  return `usage-logs:${userId ?? 'guest'}:${logCategory}:${viewAccess}:column-visibility`
 }
 
 function deserializeLogTypeFilter(value: unknown): unknown[] {
@@ -208,12 +211,17 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   })
 
   const logs = data?.items || []
-  const columns = useColumnsByCategory(
+  const originalColumns = useColumnsByCategory(
     logCategory,
     isAdmin,
     isRoot,
     showBillingSource
   )
+  const masking = useLogColumnMasking(
+    originalColumns as ColumnDef<Record<string, unknown>>[],
+    `usage-logs:${userId ?? 'guest'}:${logCategory}:${viewAccess}:content-masking:v1`
+  )
+  const columns = masking.columns
   const isLoadingData = isLoading || (isFetching && !data)
 
   const { table } = useDataTable({
@@ -222,7 +230,8 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     columnFilters,
     columnVisibilityStorageKey: getColumnVisibilityStorageKey(
       logCategory,
-      viewAccess
+      viewAccess,
+      userId
     ),
     pagination,
     enableRowSelection: false,
@@ -257,13 +266,21 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
           table={table}
           isLoading={isLoadingData}
           logCategory={logCategory}
+          maskedColumns={masking.maskedColumns}
         />
       }
       toolbar={
         isCommon ? (
-          <CommonLogsFilterBar table={table} />
+          <CommonLogsFilterBar
+            table={table}
+            columnOptions={<LogColumnOptions table={table} masking={masking} />}
+          />
         ) : (
-          <TaskLogsFilterBar table={table} logCategory={logCategory} />
+          <TaskLogsFilterBar
+            table={table}
+            logCategory={logCategory}
+            columnOptions={<LogColumnOptions table={table} masking={masking} />}
+          />
         )
       }
       renderRow={(row) => {

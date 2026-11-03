@@ -115,6 +115,8 @@ export interface ToolSurchargeItem {
 }
 
 export interface LogOtherData {
+  // Count only; anonymized values and replacement mappings are never logged.
+  anonymization_count?: number
   admin_info?: {
     request_policy?: PolicyEvent[]
     is_multi_key?: boolean

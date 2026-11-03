@@ -32,12 +32,14 @@ import dayjs from '@/lib/dayjs'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 
 import type { UsageLog } from '../data/schema'
+import { getAnonymizationCount } from '../lib/anonymization'
 import { formatModelName, logTokenName, parseLogOther } from '../lib/format'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
   isTimingLogType,
 } from '../lib/utils'
+import { MaskedLogContent } from './masked-log-content'
 import { ModelBadge, ResponseModelDetails } from './model-badge'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
 import { useUsageLogsContext } from './usage-logs-provider'
@@ -55,12 +57,14 @@ type LogField = {
   value: string
   visible: boolean
   sensitive?: boolean
+  masked?: boolean
 }
 
 /** Mobile summaries use tappable fields; desktop tooltip cells cannot reveal full text on touch. */
 export function CommonLogMobileCard<TData>(props: {
   log: UsageLog
   cells: Map<string, Cell<TData, unknown>>
+  maskedColumns?: ReadonlySet<string>
 }) {
   const { t } = useTranslation()
   const context = useUsageLogsContext()
@@ -81,45 +85,54 @@ export function CommonLogMobileCard<TData>(props: {
       label: t('Model'),
       value: model.name,
       visible: displayable && props.cells.has('model_name') && !!model.name,
+      masked: props.maskedColumns?.has('model_name'),
     },
     cost: {
       label: t('Cost'),
       value: formatLogQuota(log.quota),
       visible: displayable && props.cells.has('quota'),
+      masked: props.maskedColumns?.has('quota'),
     },
     time: {
       label: t('Time'),
       value: formatTimestampToDate(log.created_at),
       visible: props.cells.has('created_at'),
+      masked: props.maskedColumns?.has('created_at'),
     },
     user: {
       label: t('User'),
       value: log.username,
       visible: props.cells.has('user') && !!log.username,
       sensitive: true,
+      masked: props.maskedColumns?.has('user'),
     },
     channel: {
       label: t('Channel'),
       value: [log.channel_name, `#${log.channel}`].filter(Boolean).join(' '),
       visible: displayable && props.cells.has('channel'),
       sensitive: true,
+      masked: props.maskedColumns?.has('channel'),
     },
     token: {
       label: t('Token'),
       value: logTokenName(log, t),
       visible: displayable && props.cells.has('token_name') && !!log.token_name,
       sensitive: true,
+      masked: props.maskedColumns?.has('token_name'),
     },
     group: {
       label: t('Group'),
       value: group,
       visible: displayable && props.cells.has('token_name') && !!group,
       sensitive: true,
+      masked: props.maskedColumns?.has('token_name'),
     },
   }
   const selected = selectedField ? fields[selectedField] : undefined
   const activeField =
-    selected?.visible && (!selected.sensitive || context.sensitiveVisible)
+    selected?.visible &&
+    !selected.masked &&
+    (!selected.sensitive || context.sensitiveVisible)
       ? selected
       : undefined
   const metadata: FieldName[] = ['user', 'channel', 'token', 'group']
@@ -127,6 +140,7 @@ export function CommonLogMobileCard<TData>(props: {
   const costCell = props.cells.get('quota')
   const contentCell = props.cells.get('content')
   const channelCell = props.cells.get('channel')
+  const anonymizationCell = props.cells.get('anonymization_count')
   const cacheRead = other?.cache_tokens || 0
   const cacheWrite =
     (other?.cache_creation_tokens_5m || 0) +
@@ -146,13 +160,17 @@ export function CommonLogMobileCard<TData>(props: {
       <div className='flex min-w-0 flex-wrap items-start gap-x-3 gap-y-2'>
         {fields.model.visible && (
           <div className='min-w-0 flex-[1_1_10rem]'>
-            <ModelBadge
-              modelName={model.name}
-              actualModel={model.actualModel}
-              responseModel={model.responseModel}
-              wrapText
-              onInspect={() => setSelectedField('model')}
-            />
+            {fields.model.masked ? (
+              <MaskedLogContent />
+            ) : (
+              <ModelBadge
+                modelName={model.name}
+                actualModel={model.actualModel}
+                responseModel={model.responseModel}
+                wrapText
+                onInspect={() => setSelectedField('model')}
+              />
+            )}
           </div>
         )}
         {fields.cost.visible && costCell && (
@@ -167,53 +185,65 @@ export function CommonLogMobileCard<TData>(props: {
       >
         {fields.time.visible && (
           <div className='flex min-w-0 flex-col items-start justify-between gap-1'>
-            <StatusBadge
-              label={t(config.label)}
-              variant={config.color as StatusVariant}
-              copyable={false}
-              showDot
-              className='h-5 px-0 text-xs'
-            />
-            <Button
-              variant='ghost'
-              aria-label={`${t('Time')}: ${fields.time.value}`}
-              aria-haspopup='dialog'
-              onClick={() => setSelectedField('time')}
-              className='text-muted-foreground h-auto min-h-6 px-0 py-0 text-xs font-normal whitespace-normal tabular-nums'
-            >
-              {dayjs.unix(log.created_at).format('MM-DD HH:mm:ss')}
-            </Button>
+            {fields.time.masked ? (
+              <MaskedLogContent />
+            ) : (
+              <>
+                <StatusBadge
+                  label={t(config.label)}
+                  variant={config.color as StatusVariant}
+                  copyable={false}
+                  showDot
+                  className='h-5 px-0 text-xs'
+                />
+                <Button
+                  variant='ghost'
+                  aria-label={`${t('Time')}: ${fields.time.value}`}
+                  aria-haspopup='dialog'
+                  onClick={() => setSelectedField('time')}
+                  className='text-muted-foreground h-auto min-h-6 px-0 py-0 text-xs font-normal whitespace-normal tabular-nums'
+                >
+                  {dayjs.unix(log.created_at).format('MM-DD HH:mm:ss')}
+                </Button>
+              </>
+            )}
           </div>
         )}
         {timing &&
           (props.cells.has('use_time') || props.cells.has('is_stream')) && (
             <div className='col-start-2 flex min-w-0 flex-col items-end gap-1 [overflow-wrap:anywhere]'>
-              {props.cells.has('is_stream') && (
-                <StreamTpsCell
-                  compact
-                  className='min-h-5 max-w-full min-w-0 justify-end'
-                  isStream={log.is_stream}
-                  isTask={other?.is_task === true}
-                  isSyncTask={other?.task_sync === true}
-                  tokensPerSecond={
-                    log.use_time > 0 && log.completion_tokens > 0
-                      ? log.completion_tokens / log.use_time
-                      : null
-                  }
-                  streamStatus={other?.stream_status}
-                />
-              )}
-              {props.cells.has('use_time') && (
-                <TimingMetricsCell
-                  useTimeSec={log.use_time}
-                  completionTokens={log.completion_tokens}
-                  frtMs={other?.frt}
-                  isStream={log.is_stream}
-                  indicator='dot'
-                  compact
-                  className='min-h-6 max-w-full min-w-0 items-center justify-end [&>div]:justify-end'
-                />
-              )}
+              {props.cells.has('is_stream') &&
+                (props.maskedColumns?.has('is_stream') ? (
+                  <MaskedLogContent />
+                ) : (
+                  <StreamTpsCell
+                    compact
+                    className='min-h-5 max-w-full min-w-0 justify-end'
+                    isStream={log.is_stream}
+                    isTask={other?.is_task === true}
+                    isSyncTask={other?.task_sync === true}
+                    tokensPerSecond={
+                      log.use_time > 0 && log.completion_tokens > 0
+                        ? log.completion_tokens / log.use_time
+                        : null
+                    }
+                    streamStatus={other?.stream_status}
+                  />
+                ))}
+              {props.cells.has('use_time') &&
+                (props.maskedColumns?.has('use_time') ? (
+                  <MaskedLogContent />
+                ) : (
+                  <TimingMetricsCell
+                    useTimeSec={log.use_time}
+                    completionTokens={log.completion_tokens}
+                    frtMs={other?.frt}
+                    isStream={log.is_stream}
+                    indicator='dot'
+                    compact
+                    className='min-h-6 max-w-full min-w-0 items-center justify-end [&>div]:justify-end'
+                  />
+                ))}
             </div>
           )}
       </div>
@@ -248,12 +278,12 @@ export function CommonLogMobileCard<TData>(props: {
                       <AvatarFallback
                         className='text-[11px] font-semibold'
                         style={
-                          context.sensitiveVisible
+                          context.sensitiveVisible && !field.masked
                             ? getUserAvatarStyle(log.username)
                             : undefined
                         }
                       >
-                        {context.sensitiveVisible
+                        {context.sensitiveVisible && !field.masked
                           ? getUserAvatarFallback(log.username)
                           : '•'}
                       </AvatarFallback>
@@ -262,7 +292,7 @@ export function CommonLogMobileCard<TData>(props: {
                     field.label
                   )}
                 </span>
-                {context.sensitiveVisible ? (
+                {context.sensitiveVisible && !field.masked ? (
                   <Button
                     variant='ghost'
                     aria-label={`${field.label}: ${field.value}`}
@@ -283,34 +313,53 @@ export function CommonLogMobileCard<TData>(props: {
             Number.isFinite(groupRatio) &&
             props.cells.has('token_name') && (
               <div className='text-muted-foreground col-span-2 [overflow-wrap:anywhere]'>
-                {t('Group Ratio')}: {groupRatio}×
+                {t('Group Ratio')}:{' '}
+                {props.maskedColumns?.has('token_name') ? (
+                  <MaskedLogContent />
+                ) : (
+                  <>{groupRatio}×</>
+                )}
               </div>
             )}
         </div>
       )}
       {showTokens && (
         <div className='text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-xs [overflow-wrap:anywhere]'>
-          <span>
-            {t('Input')}{' '}
-            <span className='text-foreground tabular-nums'>
-              {log.prompt_tokens.toLocaleString()}
-            </span>
-          </span>
-          <span>
-            {t('Output')}{' '}
-            <span className='text-foreground tabular-nums'>
-              {log.completion_tokens.toLocaleString()}
-            </span>
-          </span>
-          {cacheRead > 0 && (
-            <span>
-              {t('Cache')} ↓ {cacheRead.toLocaleString()}
-            </span>
+          {props.maskedColumns?.has('prompt_tokens') ? (
+            <MaskedLogContent />
+          ) : (
+            <>
+              <span>
+                {t('Input')}{' '}
+                <span className='text-foreground tabular-nums'>
+                  {log.prompt_tokens.toLocaleString()}
+                </span>
+              </span>
+              <span>
+                {t('Output')}{' '}
+                <span className='text-foreground tabular-nums'>
+                  {log.completion_tokens.toLocaleString()}
+                </span>
+              </span>
+              {cacheRead > 0 && (
+                <span>
+                  {t('Cache')} ↓ {cacheRead.toLocaleString()}
+                </span>
+              )}
+              {cacheWrite > 0 && (
+                <span>
+                  {t('Cache')} ↑ {cacheWrite.toLocaleString()}
+                </span>
+              )}
+            </>
           )}
-          {cacheWrite > 0 && (
-            <span>
-              {t('Cache')} ↑ {cacheWrite.toLocaleString()}
-            </span>
+        </div>
+      )}
+      {anonymizationCell && getAnonymizationCount(other) > 0 && (
+        <div>
+          {flexRender(
+            anonymizationCell.column.columnDef.cell,
+            anonymizationCell.getContext()
           )}
         </div>
       )}
@@ -320,10 +369,12 @@ export function CommonLogMobileCard<TData>(props: {
             contentCell.column.columnDef.cell,
             contentCell.getContext()
           )}
-          <ChevronRight
-            aria-hidden='true'
-            className='text-primary pointer-events-none absolute top-4 right-0 size-4'
-          />
+          {!props.maskedColumns?.has('content') && (
+            <ChevronRight
+              aria-hidden='true'
+              className='text-primary pointer-events-none absolute top-4 right-0 size-4'
+            />
+          )}
         </div>
       )}
       <Dialog

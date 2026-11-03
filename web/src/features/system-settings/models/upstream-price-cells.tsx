@@ -27,10 +27,12 @@ import type { PricingSyncValues } from '../types'
 import { PriceAdjustmentSelect } from './price-adjustment-select'
 import {
   getSyncPriceKind,
+  getSyncSourceChoices,
   getSyncPriceLines,
   getSyncExpressionPricing,
   getUpstreamDisplayName,
   sameSyncPrice,
+  syncPriceSelection,
   useSyncPriceSelection,
 } from './upstream-ratio-sync-helpers'
 import type { PricingSyncRow } from './upstream-ratio-sync-table'
@@ -173,9 +175,28 @@ export function SyncSourcePriceCell(props: {
   row: PricingSyncRow
   source: string
 }) {
+  const choices = getSyncSourceChoices(props.row.prices, props.source)
+  if (!choices.length) return <span className='text-muted-foreground'>—</span>
+  return (
+    <div className='space-y-2'>
+      {choices.map((source) => (
+        <SyncSourcePriceChoice key={source} row={props.row} source={source} />
+      ))}
+    </div>
+  )
+}
+
+function SyncSourcePriceChoice(props: { row: PricingSyncRow; source: string }) {
   const { t } = useTranslation()
   const context = useSyncPriceSelection()
   const model = props.row.model
+  const matched = props.row.prices.source_models?.[props.source]
+  const sourceName = getUpstreamDisplayName(matched?.source ?? props.source, t)
+  const sourceLabel =
+    matched && matched.model !== model
+      ? `${sourceName} · ${matched.model}`
+      : sourceName
+  const selection = syncPriceSelection(model, props.row.prices, props.source)
   const values = props.row.prices.upstreams[props.source]
   if (!values) return <span className='text-muted-foreground'>—</span>
   const selected = context.selectedSources[model] === props.source
@@ -183,9 +204,11 @@ export function SyncSourcePriceCell(props: {
   const result = selected ? context.adjustedPrices[model] : undefined
   const same = sameSyncPrice(values, props.row.prices.current)
   const canSelect = !same || context.showUnchanged || selected
-  const confident = Object.values(props.row.differences ?? {}).every(
-    (diff) => diff?.confidence?.[props.source] !== false
-  )
+  const confident =
+    props.row.sourceConfidence?.[props.source] ??
+    Object.values(props.row.differences ?? {}).every(
+      (diff) => diff?.confidence?.[props.source] !== false
+    )
   return (
     <div
       className={cn(
@@ -207,11 +230,11 @@ export function SyncSourcePriceCell(props: {
             disabled={context.isDisabled}
             aria-label={t('Select price for {{model}} from {{source}}', {
               model,
-              source: getUpstreamDisplayName(props.source, t),
+              source: sourceLabel,
             })}
             onCheckedChange={(checked) =>
               checked
-                ? context.onSelectPrices([{ model, source: props.source }])
+                ? context.onSelectPrices([selection])
                 : context.onUnselectPrices([model])
             }
           />
@@ -227,6 +250,11 @@ export function SyncSourcePriceCell(props: {
       )}
       <div className='flex min-w-0 flex-1 flex-wrap items-center gap-2'>
         <div className='min-w-0'>
+          {matched && matched.model !== model && (
+            <p className='text-muted-foreground mb-1 text-xs break-all'>
+              {t('Upstream model: {{model}}', { model: matched.model })}
+            </p>
+          )}
           <SyncPriceCell
             values={result?.values ?? values}
             compareTo={props.row.prices.current}
@@ -240,11 +268,11 @@ export function SyncSourcePriceCell(props: {
             disabled={context.isDisabled}
             label={t('Price adjustment for {{model}} from {{source}}', {
               model,
-              source: getUpstreamDisplayName(props.source, t),
+              source: sourceLabel,
             })}
             onChange={(next) => {
               if (!selected) {
-                context.onSelectPrices([{ model, source: props.source }])
+                context.onSelectPrices([selection])
               }
               context.onAdjustPrices?.([model], next)
             }}

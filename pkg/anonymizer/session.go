@@ -3,11 +3,13 @@ package anonymizer
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Mapping stores a reversible original/surrogate pair.
@@ -162,18 +164,30 @@ type Session struct {
 	rawInput         bool
 	requestPrepared  bool
 	preflightMatches map[string][]preparedMatch
+	activeSurrogates map[string]struct{}
+	countReplacer    *strings.Replacer
+	transformCount   int64
+	replacementCount atomic.Int64
 }
 
 // beginRequestPreflight makes the first complete helper input authoritative raw
 // text. Later helper inputs are derived protocol conversions and can retain
 // already-generated aliases. The temporary cache lives for one transform only.
 func (s *Session) beginRequestPreflight() {
+	s.transformCount = 0
 	s.preflighting = true
 	s.rawInput = !s.requestPrepared
 	s.preflightMatches = make(map[string][]preparedMatch)
 }
 
 func (s *Session) endRequestTransform(success bool) {
+	if success {
+		// Protocol conversions and retries may replay the same aliases or drop
+		// earlier text slots. Keep the largest successfully processed request,
+		// while allowing later system prompts/overrides to add occurrences.
+		s.replacementCount.Store(max(s.replacementCount.Load(), s.transformCount))
+	}
+	s.transformCount = 0
 	s.preflighting = false
 	s.rawInput = false
 	s.preflightMatches = nil
@@ -230,6 +244,82 @@ func (s *Session) Snapshot() []Mapping {
 		return nil
 	}
 	return append([]Mapping(nil), s.vault.Mappings(s.engagement)...)
+}
+
+// ReplacementCount returns the sensitive occurrences processed by this logical
+// request. Imported history alone, preflight scans and failed transforms do not
+// contribute. It exposes no entity values, rules or reversible mappings.
+func (s *Session) ReplacementCount() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.replacementCount.Load()
+}
+
+// LogRedactor strips known sensitive values and their aliases from diagnostic
+// text without changing mappings or counts. The returned function is immutable.
+func (s *Session) LogRedactor() func(string) string {
+	if s == nil {
+		return func(text string) string { return text }
+	}
+	values := make(map[string]struct{})
+	for _, mapping := range s.vault.Mappings(s.engagement) {
+		for _, value := range []string{mapping.Original, mapping.Surrogate} {
+			values[value] = struct{}{}
+			// Override diagnostics can embed an encoded JSON object instead of
+			// plaintext. Remove its escaped values before the log is encoded again.
+			if encoded, err := json.Marshal(value); err == nil && len(encoded) >= 2 {
+				values[string(encoded[1:len(encoded)-1])] = struct{}{}
+			}
+		}
+	}
+	delete(values, "")
+	keys := make([]string, 0, len(values))
+	for value := range values {
+		keys = append(keys, value)
+	}
+	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+	pairs := make([]string, 0, 2*len(keys))
+	for _, value := range keys {
+		pairs = append(pairs, value, "[REDACTED]")
+	}
+	return strings.NewReplacer(pairs...).Replace
+}
+
+func (s *Session) recordActiveSurrogate(surrogate string) {
+	if s.activeSurrogates == nil {
+		s.activeSurrogates = make(map[string]struct{})
+	}
+	if _, exists := s.activeSurrogates[surrogate]; !exists {
+		s.activeSurrogates[surrogate] = struct{}{}
+		s.countReplacer = nil
+	}
+}
+
+func (s *Session) countAnonymizedText(text string) {
+	if len(s.activeSurrogates) == 0 {
+		return
+	}
+	if s.countReplacer == nil {
+		pairs := make([]string, 0, 2*len(s.activeSurrogates)+2)
+		// Longest-first, single-pass matching prevents nested aliases from
+		// being counted twice. Only aliases actively used by this request count.
+		for _, mapping := range s.vault.Mappings(s.engagement) {
+			if _, active := s.activeSurrogates[mapping.Surrogate]; active {
+				pairs = append(pairs, mapping.Surrogate, "\x00")
+			}
+		}
+		// Remove original NULs in the same pass so only replacement markers
+		// remain, including for input containing escaped control characters.
+		pairs = append(pairs, "\x00", "")
+		s.countReplacer = strings.NewReplacer(pairs...)
+	}
+	count := int64(strings.Count(s.countReplacer.Replace(text), "\x00"))
+	if s.preflightMatches != nil {
+		s.transformCount += count
+	} else {
+		s.replacementCount.Add(count)
+	}
 }
 
 // Import merges immutable saved mappings into a request-local vault. Several
@@ -487,10 +577,15 @@ func (s *Session) reserveOriginals(matches []preparedMatch) bool {
 // AnonymizeString applies one-pass span replacements. Complete request helpers
 // first invoke it in preflight mode for every text slot before generating any
 // alias, which prevents cross-field realistic-surrogate collisions.
-func (s *Session) AnonymizeString(text string) string {
+func (s *Session) AnonymizeString(text string) (output string) {
 	if s == nil || strings.TrimSpace(text) == "" || s.Err() != nil {
 		return text
 	}
+	defer func() {
+		if !s.preflighting && s.Err() == nil {
+			s.countAnonymizedText(output)
+		}
+	}()
 	raw := s.rawText(text)
 	if raw && s.preflighting && !s.reserveRawText(text) {
 		return text
@@ -528,6 +623,7 @@ func (s *Session) AnonymizeString(text string) string {
 		if mapping.Surrogate == "" {
 			return text
 		}
+		s.recordActiveSurrogate(mapping.Surrogate)
 		result.WriteString(text[cursor:item.Start])
 		result.WriteString(mapping.Surrogate)
 		cursor = item.End

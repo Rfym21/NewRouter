@@ -7,6 +7,7 @@ import (
 
 	"new-router/common"
 	"new-router/logger"
+	"new-router/pkg/anonymizer"
 	"new-router/setting/operation_setting"
 	"new-router/types"
 
@@ -287,6 +288,8 @@ func RecordTopupLog(userId int, content *common.Message, callerIp string, paymen
 
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other *LogOther) {
+	other = appendAnonymizationLogInfo(c, other)
+	content = anonymizer.FromContext(c).LogRedactor()(content)
 	logger.LogInfo(c, common.LogText("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, common.LocalLogPreview(content)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
@@ -349,6 +352,23 @@ type RecordConsumeLogParams struct {
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
 	if !common.LogConsumeEnabled {
 		return
+	}
+	params.Other = appendAnonymizationLogInfo(c, params.Other)
+	if session := anonymizer.FromContext(c); session != nil {
+		redact := session.LogRedactor()
+		parts := make([]*common.Message, 0, len(params.Content))
+		for _, part := range params.Content {
+			if part == nil {
+				continue
+			}
+			copyPart := *part
+			copyPart.Key = redact(part.Key)
+			if part.Params != nil {
+				copyPart.Params = redactLogDiagnosticValue(part.Params, redact).(map[string]any)
+			}
+			parts = append(parts, &copyPart)
+		}
+		params.Content = parts
 	}
 	logger.LogInfo(c, common.LogText("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
@@ -417,6 +437,115 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			ChannelID:           params.ChannelId,
 			NodeName:            common.NodeName,
 		})
+	}
+}
+
+// appendAnonymizationLogInfo records only a count. Never serialize a Session or
+// its snapshot here: those objects contain sensitive originals and aliases.
+func appendAnonymizationLogInfo(c *gin.Context, other *LogOther) *LogOther {
+	session := anonymizer.FromContext(c)
+	if count := session.ReplacementCount(); count > 0 {
+		if other == nil {
+			other = NewLogOther()
+		}
+		other.SetPublic("anonymization_count", count)
+	}
+	if session != nil && other != nil {
+		redact := session.LogRedactor()
+		// Parameter override values originate before anonymization. Other
+		// diagnostic fields can echo upstream errors; strip both originals and
+		// aliases before storage and before the INFO log serializes metadata.
+		if value, exists := other.public["po"]; exists {
+			other.public["po"] = redactParamOverrideLogValue(value, redact)
+		}
+		if value, exists := other.public["stream_status"]; exists {
+			other.public["stream_status"] = redactLogDiagnosticValue(value, redact)
+		}
+		for _, key := range []string{"reject_reason", "conversion_diagnostics", "request_policy"} {
+			if value, exists := other.adminInfo[key]; exists {
+				other.adminInfo[key] = redactLogDiagnosticValue(value, redact)
+			}
+		}
+	}
+	return other
+}
+
+// Override values can embed arbitrarily nested encoded JSON tool arguments.
+// Keep operation/field diagnostics but omit values for anonymization sessions,
+// rather than trying to recognize every encoding of a sensitive original.
+func redactParamOverrideLogValue(value any, redact func(string) string) any {
+	redactLine := func(line string) string {
+		operation, _, _ := strings.Cut(line, " ")
+		switch operation {
+		case "set", "set_header":
+			if prefix, _, found := strings.Cut(line, " = "); found {
+				return redact(prefix) + " = [REDACTED]"
+			}
+		case "prepend", "append", "trim_prefix", "trim_suffix", "ensure_prefix", "ensure_suffix":
+			if prefix, _, found := strings.Cut(line, " with "); found {
+				return redact(prefix) + " with [REDACTED]"
+			}
+		case "replace", "regex_replace":
+			if prefix, _, found := strings.Cut(line, " from "); found {
+				return redact(prefix) + " from [REDACTED] to [REDACTED]"
+			}
+		case "return_error", "pass_headers":
+			return operation + " [REDACTED]"
+		case "delete", "copy", "move", "trim_space", "to_lower", "to_upper", "delete_header", "copy_header", "move_header", "sync_fields":
+			return redact(line)
+		}
+		return "[REDACTED]"
+	}
+	switch typed := value.(type) {
+	case []string:
+		result := make([]string, len(typed))
+		for i, line := range typed {
+			result[i] = redactLine(line)
+		}
+		return result
+	case string:
+		return redactLine(typed)
+	default:
+		return "[REDACTED]"
+	}
+}
+
+func redactLogDiagnosticValue(value any, redact func(string) string) any {
+	switch typed := value.(type) {
+	case string:
+		return redact(typed)
+	case []string:
+		result := make([]string, len(typed))
+		for i, item := range typed {
+			result[i] = redact(item)
+		}
+		return result
+	case []any:
+		result := make([]any, len(typed))
+		for i, item := range typed {
+			result[i] = redactLogDiagnosticValue(item, redact)
+		}
+		return result
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			result[key] = redactLogDiagnosticValue(item, redact)
+		}
+		return result
+	default:
+		// Routing diagnostics use typed structs/slices. Convert only composite
+		// values, retaining JSON numbers so billing integers keep their precision.
+		encoded, err := common.Marshal(value)
+		if err == nil {
+			var decoded any
+			if common.UnmarshalWithNumber(encoded, &decoded) == nil {
+				switch decoded.(type) {
+				case []any, map[string]any:
+					return redactLogDiagnosticValue(decoded, redact)
+				}
+			}
+		}
+		return value
 	}
 }
 

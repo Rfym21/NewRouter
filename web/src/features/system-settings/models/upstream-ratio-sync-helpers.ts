@@ -29,7 +29,11 @@ import {
 } from '@/features/pricing/lib/billing-expr'
 import { tryParseVisualConfig } from '@/features/pricing/lib/tier-expr'
 
-import type { PricingSyncValues } from '../types'
+import type {
+  PricingSyncModel,
+  PricingSyncModels,
+  PricingSyncValues,
+} from '../types'
 import {
   OFFICIAL_CHANNEL_ID,
   OFFICIAL_CHANNEL_NAME,
@@ -42,8 +46,95 @@ import type {
   AdjustedSyncPrice,
 } from './upstream-price-adjustment'
 
-export type PricingSourceSelection = { model: string; source: string }
+export type PricingSourceSelection = {
+  model: string
+  source: string
+  values?: PricingSyncValues
+  current?: PricingSyncValues
+  sourceName?: string
+  upstreamModel?: string
+}
 export type PricingSourceSelections = Record<string, string>
+export type PricingMatchMode = 'exact' | 'fuzzy'
+
+export function getSyncSourceChoices(prices: PricingSyncModel, source: string) {
+  return Object.keys(prices.upstreams).filter(
+    (key) => (prices.source_models?.[key]?.source ?? key) === source
+  )
+}
+
+export function syncPriceSelection(
+  model: string,
+  prices: PricingSyncModel,
+  source: string
+): PricingSourceSelection {
+  const matched = prices.source_models?.[source]
+  return {
+    model,
+    source,
+    values: prices.upstreams[source],
+    current: prices.current,
+    sourceName: matched?.source ?? source,
+    upstreamModel: matched?.model ?? model,
+  }
+}
+
+// Each projected row keeps the local model as its save target. Several fuzzy
+// offers from one source remain separate choices; none is selected implicitly.
+export function matchLocalSyncPrices(
+  upstreamPrices: PricingSyncModels,
+  localModels: Record<string, PricingSyncValues>,
+  mode: PricingMatchMode
+): PricingSyncModels {
+  const result: PricingSyncModels = {}
+  const entries = Object.entries(upstreamPrices)
+  for (const [localModel, current] of Object.entries(localModels)) {
+    const localName = localModel.toLowerCase()
+    const candidates = entries.filter(([name]) =>
+      mode === 'exact'
+        ? name === localModel
+        : name.toLowerCase().includes(localName) ||
+          localName.includes(name.toLowerCase())
+    )
+    const sources = new Set(
+      candidates.flatMap(([, row]) => Object.keys(row.upstreams))
+    )
+    const sourceModels: NonNullable<PricingSyncModel['source_models']> = {}
+    const row: PricingSyncModel = {
+      current,
+      upstreams: {},
+      source_models: sourceModels,
+    }
+    for (const source of sources) {
+      let choices = candidates.filter(
+        ([, candidate]) => candidate.upstreams[source]
+      )
+      const exact = choices.filter(([name]) => name === localModel)
+      const caseMatch = choices.filter(
+        ([name]) => name.toLowerCase() === localName
+      )
+      if (exact.length) choices = exact
+      else if (caseMatch.length) choices = caseMatch
+      for (const [upstreamModel, candidate] of choices) {
+        const values = candidate.upstreams[source]
+        if (
+          getSyncPriceKind(current) === 'expression' &&
+          getSyncPriceKind(values) !== 'expression'
+        ) {
+          continue
+        }
+        const key =
+          choices.length === 1
+            ? source
+            : `match:${JSON.stringify([source, upstreamModel])}`
+        row.upstreams[key] = values
+        sourceModels[key] = { source, model: upstreamModel }
+      }
+    }
+    if (Object.keys(row.upstreams).length) result[localModel] = row
+  }
+  return result
+}
 
 export function getUpstreamDisplayName(
   sourceName: string,

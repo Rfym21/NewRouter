@@ -112,6 +112,7 @@ describe('usage log CSV export', () => {
       '203.0.113.9',
       'req-1',
       '',
+      '',
     ])
   })
 
@@ -155,6 +156,19 @@ describe('usage log CSV export', () => {
     expect(row.slice(1, 2)).toEqual(['充值'])
     expect(row.slice(5, 12)).toEqual(['', '', '', '', '', '', ''])
     expect(row.at(-1)).toBe('充值 $5')
+  })
+
+  test('exports only the anonymization count and leaves unprocessed logs empty', async () => {
+    const t = await chineseTranslator()
+    const header = getLogCsvHeader(false, t)
+    const index = header.indexOf('Anonymization')
+    const anonymized = {
+      ...consumeLog,
+      other: JSON.stringify({ anonymization_count: 4 }),
+    }
+    expect(getLogCsvRow(anonymized, false, t)[index]).toBe('4')
+    expect(getLogCsvRow(consumeLog, false, t)[index]).toBe('')
+    expect(getLogCsvRow(anonymized, false, t)).toHaveLength(header.length)
   })
 
   test('cells are quoted and text that starts a formula stays text', () => {

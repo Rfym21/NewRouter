@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"new-router/constant"
 	"new-router/dto"
 	"new-router/model"
+	"new-router/pkg/anonymizer"
 	kitdto "new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/setting/system_setting"
@@ -23,6 +25,37 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestProcessChannelErrorRedactsAnonymizedDiagnosticValues(t *testing.T) {
+	previousErrorLog := constant.ErrorLogEnabled
+	constant.ErrorLogEnabled = false
+	output := &bytes.Buffer{}
+	common.LogWriterMu.Lock()
+	previousWriter, previousErrorWriter := gin.DefaultWriter, gin.DefaultErrorWriter
+	gin.DefaultWriter, gin.DefaultErrorWriter = output, output
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		constant.ErrorLogEnabled = previousErrorLog
+		common.LogWriterMu.Lock()
+		gin.DefaultWriter, gin.DefaultErrorWriter = previousWriter, previousErrorWriter
+		common.LogWriterMu.Unlock()
+	})
+	const original = "PRIVATE_RELAY_DIAGNOSTIC_7319"
+	rules, err := anonymizer.CompileRules([]anonymizer.Rule{{Name: "diagnostic", Mode: "literal", Pattern: original, EntityType: "CUSTOM", Enabled: true}})
+	require.NoError(t, err)
+	session := anonymizer.NewSession("relay-error-log", nil).WithRules(rules)
+	alias := session.AnonymizeString(original)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	anonymizer.Attach(ctx, session)
+	apiErr := types.NewErrorWithStatusCode(errors.New("upstream rejected "+original+" / "+alias), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+	ProcessChannelError(ctx, types.ChannelError{ChannelId: 7}, apiErr, nil)
+	assert.Contains(t, output.String(), "[REDACTED]")
+	assert.NotContains(t, output.String(), original)
+	assert.NotContains(t, output.String(), alias)
+	assert.Contains(t, apiErr.Error(), original, "diagnostic redaction must not mutate the upstream error")
+	assert.EqualValues(t, 1, session.ReplacementCount())
+}
 
 func TestShouldRetryRelayErrorHonorsChannelPinOnChannelError(t *testing.T) {
 	err := types.NewError(errors.New("channel failed"), types.ErrorCodeChannelNoAvailableKey)

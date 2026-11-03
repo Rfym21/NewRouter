@@ -126,6 +126,7 @@ var logExportColumns = []logExportColumn{
 	{Key: "cache_read", Label: "缓存读"},
 	{Key: "cache_write", Label: "缓存写"},
 	{Key: "request_id", Label: "请求 ID"},
+	{Key: "anonymization_count", Label: "匿名化数量"},
 }
 
 func logExportColumnMap() map[string]logExportColumn {

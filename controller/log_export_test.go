@@ -188,6 +188,7 @@ func TestLogExportRules(t *testing.T) {
 	logSetting := operation_setting.GetLogSetting()
 	previousSetting := *logSetting
 	t.Cleanup(func() { *logSetting = previousSetting })
+	logSetting.MaxRangeDays = 365
 	recent := fmt.Sprintf("start_timestamp=%d&end_timestamp=%d", now-2*24*3600, now)
 	tooLong := fmt.Sprintf("start_timestamp=%d&end_timestamp=%d", now-366*24*3600, now)
 
@@ -240,6 +241,61 @@ func TestLogExportRules(t *testing.T) {
 		release()
 		assert.Len(t, callLogHandler(t, ExportUserLogs, 1, common.RoleCommonUser, recent), 3)
 	})
+}
+
+func TestLogRangeLimitIsSharedByQueriesAndBothExports(t *testing.T) {
+	db, _ := newAuditTestDatabase(t, "sqlite", "")
+	useLogExportDatabases(t, db, db, common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Log{}, &model.QuotaData{}))
+	now := time.Now().Unix()
+	seedExportLogs(t, db, db, now)
+	settings := operation_setting.GetLogSetting()
+	previous, previousLegacy, previousRedis := *settings, common.LogExportMaxDays, common.RedisEnabled
+	t.Cleanup(func() {
+		*settings, common.LogExportMaxDays, common.RedisEnabled = previous, previousLegacy, previousRedis
+	})
+	settings.MaxRangeDays, settings.UserExportEnabled = 7, true
+	common.LogExportMaxDays, common.RedisEnabled = 1, false
+
+	withinRange := fmt.Sprintf("start_timestamp=%d&end_timestamp=%d", now-6*24*3600, now)
+	for _, handler := range []gin.HandlerFunc{GetUserLogs, ExportUserLogs} {
+		response := callLogHandler(t, handler, 1, common.RoleCommonUser, withinRange)
+		assert.Equal(t, true, response[len(response)-1]["success"])
+	}
+	tooLong := fmt.Sprintf("start_timestamp=%d&end_timestamp=%d", now-8*24*3600, now)
+	for _, handler := range []gin.HandlerFunc{GetUserLogs, ExportUserLogs, ExportAllLogs} {
+		response := callLogHandler(t, handler, 1, common.RoleCommonUser, tooLong)
+		assert.Equal(t, "The time range cannot exceed {{days}} days", response[0]["message_key"])
+		assert.Equal(t, map[string]any{"days": float64(7)}, response[0]["message_params"])
+	}
+
+	release, ok, err := service.AcquireLogExportLock(7)
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer release()
+	for _, tc := range []struct {
+		days    int
+		message string
+	}{
+		{6, "Another log export is running. Try again after it finishes."},
+		{8, "The time range cannot exceed {{days}} days"},
+	} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Set("id", 7)
+		ctx.Set("role", common.RoleCommonUser)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/log-export", strings.NewReader(fmt.Sprintf(
+			`{"start_timestamp":%d,"end_timestamp":%d,"columns":["request_id"]}`,
+			now-int64(tc.days)*24*3600, now,
+		)))
+		CreateLogExport(ctx)
+		var response map[string]any
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+		assert.Equal(t, tc.message, response["message_key"])
+	}
+	status := callLogHandler(t, GetStatus, 1, common.RoleCommonUser, "")[0]["data"].(map[string]any)
+	assert.EqualValues(t, 7, status["log_max_range_days"])
+	assert.EqualValues(t, 7, status["log_export_max_days"], "legacy clients receive the same unified limit")
 }
 
 func TestAcquireLogExportLock(t *testing.T) {

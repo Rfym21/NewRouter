@@ -45,7 +45,6 @@ function Fixture() {
           defaultValues={{
             LogConsumeEnabled: true,
             AdminAuditMode: 'billing_only',
-            LogExportMaxDays: 30,
             LogExportFileRetentionHours: 24,
             'log_setting.user_export_enabled': true,
             'log_setting.max_range_days': 30,
@@ -66,7 +65,7 @@ async function renderSettings() {
     </QueryClientProvider>
   )
   return screen.findByRole('spinbutton', {
-    name: 'Longest log time range (days)',
+    name: 'Log time range limit (days)',
   })
 }
 
@@ -111,8 +110,16 @@ test('recording, export and cleanup modules share the log settings page', async 
   ).toBeVisible()
   const search = screen.getByRole('group', { name: 'Log search and export' })
   expect(
-    within(search).getByRole('spinbutton', { name: 'Max export range (days)' })
+    within(search).getByRole('spinbutton', {
+      name: 'Log time range limit (days)',
+    })
   ).toHaveValue(30)
+  expect(within(search).getAllByRole('spinbutton')).toHaveLength(2)
+  expect(
+    within(search).queryByRole('spinbutton', {
+      name: 'Max export range (days)',
+    })
+  ).toBeNull()
   expect(
     within(search).getByRole('spinbutton', { name: 'File retention (hours)' })
   ).toHaveValue(24)
@@ -124,7 +131,7 @@ test('recording, export and cleanup modules share the log settings page', async 
   ).toBeVisible()
   expect(
     within(search).getByRole('spinbutton', {
-      name: 'Longest log time range (days)',
+      name: 'Log time range limit (days)',
     })
   ).toBeVisible()
   const cleanup = screen.getByRole('group', { name: 'Clean history logs' })
@@ -184,16 +191,12 @@ test('one save applies changed search and export settings together', async () =>
   )
   fireEvent.change(days, { target: { value: '90' } })
   fireEvent.change(
-    screen.getByRole('spinbutton', { name: 'Max export range (days)' }),
-    { target: { value: '60' } }
-  )
-  fireEvent.change(
     screen.getByRole('spinbutton', { name: 'File retention (hours)' }),
     { target: { value: '48' } }
   )
   await user.click(screen.getByRole('button', { name: 'Save log settings' }))
 
-  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(4))
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(3))
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'log_setting.user_export_enabled',
     value: false,
@@ -201,10 +204,6 @@ test('one save applies changed search and export settings together', async () =>
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'log_setting.max_range_days',
     value: 90,
-  })
-  expect(api.put).toHaveBeenCalledWith('/api/option/', {
-    key: 'LogExportMaxDays',
-    value: 60,
   })
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'LogExportFileRetentionHours',

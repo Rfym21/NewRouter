@@ -104,16 +104,11 @@ export function LogExportDialog({ open, onOpenChange }: LogExportDialogProps) {
   const searchParams = route.useSearch()
   const { status } = useStatus()
 
-  const maxDays = useMemo(() => {
-    const raw = Number(
-      (status as unknown as { log_export_max_days?: number } | null)
-        ?.log_export_max_days
-    )
-    return Math.min(
-      Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 30,
-      status?.log_max_range_days || 365
-    )
-  }, [status])
+  const configuredMaxDays = Number(status?.log_max_range_days)
+  const maxDays =
+    Number.isFinite(configuredMaxDays) && configuredMaxDays >= 1
+      ? Math.floor(configuredMaxDays)
+      : 30
   const maxRangeSeconds = maxDays * 24 * 3600
 
   const columns = useMemo(

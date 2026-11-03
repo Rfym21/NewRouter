@@ -28,11 +28,11 @@ import {
 } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { LoadingState } from '@/components/loading-state'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -79,19 +79,24 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
   const { t } = useTranslation()
   const isMobile = useMediaQuery('(max-width: 640px)')
   const [search, setSearch] = useState('')
-  const [showUnchanged, setShowUnchanged] = useState(false)
+  const [priceStatus, setPriceStatus] = useState<'all' | 'unset' | 'different'>(
+    'different'
+  )
   const [kind, setKind] = useState('__all__')
+  const showUnchanged = priceStatus === 'all'
   const debouncedSearch = useDebounce(search, 250)
   const rows = useMemo(
     () =>
       Object.entries(props.prices)
         .filter(
-          ([model, values]) =>
-            showUnchanged ||
-            Boolean(props.selectedSources[model]) ||
-            Object.values(values.upstreams).some(
-              (candidate) => !sameSyncPrice(values.current, candidate)
-            )
+          ([, values]) =>
+            priceStatus === 'all' ||
+            (priceStatus === 'unset' &&
+              getSyncPriceKind(values.current) === 'unset') ||
+            (priceStatus === 'different' &&
+              Object.values(values.upstreams).some(
+                (candidate) => !sameSyncPrice(values.current, candidate)
+              ))
         )
         .map(([model, prices]) => ({
           model,
@@ -99,7 +104,7 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
           differences: props.differences[model],
         }))
         .sort((a, b) => a.model.localeCompare(b.model)),
-    [props.prices, props.differences, props.selectedSources, showUnchanged]
+    [props.prices, props.differences, priceStatus]
   )
   const filteredRows = useMemo(
     () =>
@@ -126,6 +131,12 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
       ].sort(),
     [props.prices]
   )
+  const hiddenSelectionCount = useMemo(() => {
+    const visibleModels = new Set(filteredRows.map((row) => row.model))
+    return Object.keys(props.selectedSources).filter(
+      (model) => !visibleModels.has(model)
+    ).length
+  }, [filteredRows, props.selectedSources])
   const bulkStates = useMemo(
     () =>
       Object.fromEntries(
@@ -174,13 +185,22 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
     { value: 'token', label: t('Per-token') },
     { value: 'request', label: t('Per-request') },
   ]
+  const priceStatuses = [
+    { value: 'all', label: t('All models') },
+    { value: 'unset', label: t('Only show models with unset prices') },
+    { value: 'different', label: t('Only show models with different prices') },
+  ]
   let content: ReactNode
   if (props.isSyncing) {
     content = <LoadingState message={t('Fetching upstream prices...')} />
   } else if (rows.length === 0) {
     content = (
       <EmptyState
-        title={t('No upstream price differences found')}
+        title={
+          priceStatus === 'different'
+            ? t('No upstream price differences found')
+            : t('No results found')
+        }
         bordered
         className='min-h-48 flex-1'
       />
@@ -270,30 +290,59 @@ export function UpstreamRatioSyncTable(props: UpstreamRatioSyncTableProps) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent alignItemWithTrigger={false}>
-              {types.map((type) => (
-                <SelectItem value={type.value} key={type.value}>
-                  {type.label}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {types.map((type) => (
+                  <SelectItem value={type.value} key={type.value}>
+                    {type.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
-          <label className='flex items-center gap-2 text-sm'>
-            <Checkbox
-              checked={showUnchanged}
-              disabled={props.isDisabled}
-              onCheckedChange={(checked) => {
-                setShowUnchanged(checked)
+          <Select
+            value={priceStatus}
+            items={priceStatuses}
+            onValueChange={(value) => {
+              if (
+                value === 'all' ||
+                value === 'unset' ||
+                value === 'different'
+              ) {
+                setPriceStatus(value)
                 table.setPageIndex(0)
-              }}
-            />
-            {t('Show models with matching prices')}
-          </label>
+              }
+            }}
+            disabled={props.isDisabled}
+          >
+            <SelectTrigger
+              className='w-full sm:w-64'
+              aria-label={t('Price status')}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {priceStatuses.map((status) => (
+                  <SelectItem value={status.value} key={status.value}>
+                    {status.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
           <span className='text-muted-foreground text-xs sm:ml-auto'>
             USD / {t('1M token')}
           </span>
         </div>
         {content}
-        <div className='shrink-0'>
+        <div className='shrink-0 space-y-2'>
+          {hiddenSelectionCount > 0 && (
+            <p className='text-muted-foreground text-xs' role='status'>
+              {t('Selected models hidden by filters: {{count}}', {
+                count: hiddenSelectionCount,
+              })}
+            </p>
+          )}
           <DataTablePagination table={table} />
         </div>
       </div>

@@ -2,14 +2,31 @@ package plugins_test
 
 import (
 	"encoding/base64"
+	"errors"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"new-router/common"
+	"new-router/constant"
+	"new-router/i18n"
+	"new-router/model"
+	"new-router/pkg/billingexpr"
 	"new-router/pkg/jsplugin"
 	builtinplugins "new-router/plugins"
 	"new-router/relay"
+	taskplugin "new-router/relay/channel/task/jsplugin"
+	relaycommon "new-router/relay/common"
+	"new-router/service"
+	"new-router/setting/billing_setting"
+	"new-router/setting/config"
+	"new-router/setting/ratio_setting"
 )
 
 func TestVertexAIResponsesProtocol(t *testing.T) {
@@ -51,7 +68,7 @@ func TestVertexAIResponsesProtocol(t *testing.T) {
 			require.True(t, exists, key)
 			assert.NotEmpty(t, schema.Description, key)
 		}
-		assert.Equal(t, []string{"360p", "720p", "1080p", "4k"}, plugin.Meta.UsageSchema["resolution"].Enum)
+		assert.Equal(t, []string{"720p", "1080p", "4k"}, plugin.Meta.UsageSchema["resolution"].Enum)
 		assert.Equal(t, "boolean", plugin.Meta.UsageSchema["generate_audio"].Type)
 	})
 
@@ -459,11 +476,30 @@ func TestVertexAIOmniUsageAndVideoDecoder(t *testing.T) {
 	const omni = "gemini-omni-1.1-flash-preview"
 	usage, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{"upstreamModel": omni, "requestBody": map[string]any{"prompt": "x", "size": "1920x1080"}})
 	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"seconds": float64(8), "resolution": "1080p", "generate_audio": true}, decodePluginValue(t, usage))
-	// Gemini Omni has no Veo 4K multiplier, so pre-consume ratios reuse its facts.
-	ratios, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{"upstreamModel": omni, "usagePurpose": "billing_ratios", "requestBody": map[string]any{"prompt": "x", "duration": 5, "size": "1920x1080"}})
+	assert.Equal(t, map[string]any{"input_tokens": float64(0), "output_tokens": float64(0), "video_tokens": float64(8 * 8688)}, decodePluginValue(t, usage))
+	schema, _ := plugin.Meta.UsageForModel(omni)
+	assert.ElementsMatch(t, []string{"input_tokens", "output_tokens", "video_tokens"}, slices.Collect(maps.Keys(schema)))
+	// Omni uses the same token estimate for pre-consumption, without Veo's 4K multiplier.
+	ratios, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{"upstreamModel": omni, "usagePurpose": "billing_ratios", "requestBody": map[string]any{"prompt": "x", "duration": 5, "resolution": "4k"}})
 	require.NoError(t, err)
-	assert.Equal(t, map[string]any{"seconds": float64(5), "resolution": "1080p", "generate_audio": true}, decodePluginValue(t, ratios))
+	assert.Equal(t, map[string]any{"input_tokens": float64(0), "output_tokens": float64(0), "video_tokens": float64(5 * 17376)}, decodePluginValue(t, ratios))
+
+	// Thinking is billed as text output.
+	completed, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", map[string]any{"upstreamModel": omni}, map[string]any{}, map[string]any{
+		"usage": map[string]any{
+			"total_input_tokens": 12, "total_thought_tokens": 40,
+			"output_tokens_by_modality": []any{map[string]any{"modality": "VIDEO", "tokens": 5793}, map[string]any{"modality": "text", "tokens": 7}},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"input_tokens": float64(12), "output_tokens": float64(47), "video_tokens": float64(5793)}, decodePluginValue(t, completed))
+	// Unreported facts are omitted so the host keeps the submit estimate.
+	partial, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", map[string]any{"upstreamModel": omni}, map[string]any{}, map[string]any{"usage": map[string]any{"total_input_tokens": 12}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"input_tokens": float64(12)}, decodePluginValue(t, partial))
+	veo, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", map[string]any{"upstreamModel": "veo-3.0-generate-001"}, map[string]any{}, map[string]any{"done": true})
+	require.NoError(t, err)
+	assert.Nil(t, veo)
 
 	decoded, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
 		"model": "omni-alias", "upstreamModel": omni,
@@ -474,6 +510,274 @@ func TestVertexAIOmniUsageAndVideoDecoder(t *testing.T) {
 	assert.Equal(t, "omni-alias", requestBody["model"])
 	assert.Equal(t, float64(3), requestBody["duration"])
 	assert.Equal(t, "360p", requestBody["resolution"])
+}
+
+func TestVertexAIOmniTokenCompletionSettlement(t *testing.T) {
+	plugin := loadVertexAIPlugin(t)
+	const omni = "gemini-omni-1.1-flash-preview"
+	const expression = `tier("tokens", (u("input_tokens") + u("output_tokens") * 2 + u("video_tokens") * 3) / 1000000)`
+	usage, err := plugin.Engine.Call(t.Context(), "extractUsage", map[string]any{
+		"upstreamModel": omni, "requestBody": map[string]any{"duration": 8, "resolution": "1080p"},
+	})
+	require.NoError(t, err)
+	reserved := decodePluginValue(t, usage)
+	assert.Equal(t, map[string]any{"input_tokens": float64(0), "output_tokens": float64(0), "video_tokens": float64(69504)}, reserved)
+	initialFacts := maps.Clone(reserved)
+	snapshot := &billingexpr.BillingSnapshot{
+		BillingMode: billing_setting.BillingModeTieredExpr, ModelName: "omni-alias", ExprString: expression,
+		ExprHash: billingexpr.ExprHashString(expression), ExprVersion: billingexpr.ExprVersion(expression),
+		GroupRatio: 1, QuotaPerUnit: 500000, TaskUsageBilling: true, UsageFacts: reserved,
+	}
+	// Parsing a stored response needs no OAuth exchange. Keep the real usage
+	// metadata and driver hooks while using inert credentials for this test.
+	plugin.Meta.Auth = jsplugin.AuthMeta{Type: "none"}
+	adaptor := taskplugin.New(plugin)
+	adaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}})
+	task := &model.Task{TaskID: "omni-public", Properties: model.Properties{OriginModelName: "omni-alias", UpstreamModelName: omni}}
+	for _, tc := range []struct {
+		name       string
+		usage      map[string]any
+		wantFacts  map[string]any
+		wantMerged map[string]any
+		wantQuota  int
+	}{
+		{
+			name: "actual input thinking text video and audio",
+			usage: map[string]any{
+				"total_input_tokens": 12, "total_thought_tokens": 40,
+				"output_tokens_by_modality": []any{
+					map[string]any{"modality": "VIDEO", "tokens": 5793},
+					map[string]any{"modality": "audio", "tokens": 11},
+					map[string]any{"modality": "text", "tokens": 7},
+				},
+			},
+			wantFacts:  map[string]any{"input_tokens": float64(12), "output_tokens": float64(47), "video_tokens": float64(5804)},
+			wantMerged: map[string]any{"input_tokens": float64(12), "output_tokens": float64(47), "video_tokens": float64(5804)},
+			wantQuota:  8759,
+		},
+		{
+			name:       "partial input retains unreported video estimate",
+			usage:      map[string]any{"total_input_tokens": 12},
+			wantFacts:  map[string]any{"input_tokens": float64(12)},
+			wantMerged: map[string]any{"input_tokens": float64(12), "output_tokens": float64(0), "video_tokens": float64(69504)},
+			wantQuota:  104262,
+		},
+		{
+			name: "reported zero replaces video estimate",
+			usage: map[string]any{
+				"total_input_tokens": 12, "total_thought_tokens": 0,
+				"output_tokens_by_modality": []any{map[string]any{"modality": "VIDEO", "tokens": 0}},
+			},
+			wantFacts:  map[string]any{"input_tokens": float64(12), "output_tokens": float64(0), "video_tokens": float64(0)},
+			wantMerged: map[string]any{"input_tokens": float64(12), "output_tokens": float64(0), "video_tokens": float64(0)},
+			wantQuota:  6,
+		},
+		{
+			name:       "missing usage retains reservation",
+			wantMerged: map[string]any{"input_tokens": float64(0), "output_tokens": float64(0), "video_tokens": float64(69504)},
+			wantQuota:  104256,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"status": "completed",
+				"steps": []any{map[string]any{"type": "model_output", "content": []any{
+					map[string]any{"type": "video", "uri": "gs://bucket/video.mp4"},
+				}}},
+			}
+			if tc.usage != nil {
+				body["usage"] = tc.usage
+			}
+			encoded, err := common.Marshal(body)
+			require.NoError(t, err)
+			result, err := adaptor.ParseTaskResult(task, &http.Response{StatusCode: http.StatusOK}, encoded)
+			require.NoError(t, err)
+			assert.Equal(t, "SUCCESS", result.Status)
+			assert.Equal(t, tc.wantFacts, result.UsageFacts)
+			settled, merged, err := service.EvaluateTaskCompletionUsage(snapshot, result.UsageFacts)
+			require.NoError(t, err)
+			assert.Equal(t, "tokens", settled.MatchedTier)
+			assert.Equal(t, tc.wantQuota, settled.ActualQuotaAfterGroup)
+			assert.Equal(t, tc.wantMerged, merged)
+			assert.Equal(t, initialFacts, snapshot.UsageFacts)
+		})
+	}
+}
+
+func TestVertexAIVeoPreservesDurationAnd4KReservation(t *testing.T) {
+	plugin := loadVertexAIPlugin(t)
+	ctx := map[string]any{
+		"upstreamModel": "veo-3.1-fast-generate-preview",
+		"auth":          map[string]any{"projectId": "p1", "authHeader": "Bearer token"},
+		"requestBody": map[string]any{
+			"prompt": "waves", "duration": 4,
+			"metadata": map[string]any{"durationSeconds": 8, "resolution": "4K"},
+		},
+	}
+	value, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+	require.NoError(t, err)
+	parameters := decodePluginValue(t, value)["body"].(map[string]any)["parameters"].(map[string]any)
+	assert.Equal(t, float64(8), parameters["durationSeconds"])
+	assert.Equal(t, "4k", parameters["resolution"])
+	value, err = plugin.Engine.Call(t.Context(), "extractUsage", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"seconds": float64(8), "resolution": "4k", "generate_audio": true}, decodePluginValue(t, value))
+	ctx["usagePurpose"] = "billing_ratios"
+	value, err = plugin.Engine.Call(t.Context(), "extractUsage", ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"seconds": float64(8), "resolution_multiplier": 2.333333}, decodePluginValue(t, value))
+}
+
+func TestVertexAIOmniRejectsLegacyPricesBeforeReservation(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	gin.SetMode(gin.TestMode)
+	savedConfig := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		savedConfig[key] = value
+		return nil
+	}))
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(savedConfig)) })
+	savedPrices := ratio_setting.ModelPrice2JSONString()
+	savedRatios := ratio_setting.ModelRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+	})
+	const omni = "gemini-omni-1.1-flash-preview"
+	const source = `
+export const meta = USAGE_META;
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit",method:"POST",body:{prompt:"waves"},action:"text_to_video"};}
+export function parseSubmitResponse(){return {taskId:"1"};}
+export function buildQueryRequest(){return {url:"https://provider.example/query"};}
+export function parseTaskResult(){return {status:"SUCCESS"};}
+let extractions=0;
+export function extractUsage(){extractions++;return {input_tokens:0,output_tokens:0,video_tokens:10000};}
+export function extractionCount(){return extractions;}
+`
+	actual := loadVertexAIPlugin(t)
+	for _, tc := range []struct {
+		name, expression                        string
+		valid, alias, legacyProfile, modelPrice bool
+		wantQuota                               int
+	}{
+		{name: "old seconds price", expression: `tier("seconds", u("seconds") * 0.1)`},
+		{name: "old seconds nil fallback", expression: `u("seconds") == nil ? tier("free", 0) : tier("seconds", u("seconds") * 0.1)`},
+		{name: "old resolution fallback", expression: `u("resolution") == "4k" ? tier("4k", 0.2) : tier("default", 0.1)`},
+		{name: "legacy field in skipped branch", expression: `true ? tier("free", 0) : tier("seconds", u("seconds") * 0.1)`},
+		{name: "ratio without expression"},
+		{name: "per call price without expression", modelPrice: true},
+		{name: "mapped alias per call price without expression", alias: true, modelPrice: true},
+		{name: "token price", expression: `tier("tokens", (u("input_tokens") + u("output_tokens") * 2 + u("video_tokens") * 3) / 1000000)`, valid: true, wantQuota: 15000},
+		{name: "mapped alias token price", expression: `tier("tokens", (u("input_tokens") + u("output_tokens") * 2 + u("video_tokens") * 3) / 1000000)`, alias: true, valid: true, wantQuota: 15000},
+		{name: "legacy uploaded seconds profile", expression: `tier("seconds", u("seconds") * 0.1)`, legacyProfile: true, valid: true, wantQuota: 400000},
+		{name: "legacy uploaded per call profile", legacyProfile: true, modelPrice: true, valid: true, wantQuota: 400000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Use the built-in plugin's actual default and model-specific schemas;
+			// only the transport hooks are inert fixtures that avoid OAuth and HTTP.
+			meta := map[string]any{
+				"apiVersion": 1, "key": "vertex-ai", "name": "Vertex billing fixture", "version": "1.0.0",
+				"author": map[string]any{"name": "Test"}, "models": actual.Meta.Models, "fetchMode": "per_task",
+				"usageSchema": actual.Meta.UsageSchema, "usageExamples": actual.Meta.UsageExamples,
+			}
+			if !tc.legacyProfile {
+				meta["usageProfiles"] = actual.Meta.UsageProfiles
+			}
+			metadata, err := common.Marshal(meta)
+			require.NoError(t, err)
+			fixture := strings.Replace(source, "USAGE_META", string(metadata), 1)
+			if tc.legacyProfile {
+				fixture = strings.Replace(fixture, "{input_tokens:0,output_tokens:0,video_tokens:10000}", `{seconds:8,resolution:"720p",generate_audio:true}`, 1)
+			}
+			registry := jsplugin.NewRegistry()
+			plugin, err := registry.Register(fixture, jsplugin.Options{})
+			require.NoError(t, err)
+			require.False(t, registry.Generation().SharedModel(omni), "this must exercise the single-plugin guard")
+			name := omni
+			if tc.alias {
+				name = "customer-omni"
+			}
+			overrides := map[string]string{}
+			if tc.expression != "" {
+				overrides["vertex-ai::"+omni] = tc.expression
+			}
+			expressions, err := common.Marshal(overrides)
+			require.NoError(t, err)
+			modes, err := common.Marshal(map[string]string{omni: "ratio", name: "ratio"})
+			require.NoError(t, err)
+			prices := map[string]float64{}
+			if tc.modelPrice {
+				prices[name] = 0.1
+			}
+			priceJSON, err := common.Marshal(prices)
+			require.NoError(t, err)
+			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(string(priceJSON)))
+			ratioJSON, err := common.Marshal(map[string]float64{name: 1})
+			require.NoError(t, err)
+			require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(string(ratioJSON)))
+			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+				billing_setting.PluginBillingExprOption: string(expressions),
+				"billing_setting.billing_mode":          string(modes), "billing_setting.billing_expr": `{}`,
+				"group_ratio_setting.group_ratio": `{"default":1}`,
+			}))
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, name)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://provider.example")
+			if tc.alias {
+				mapping, err := common.Marshal(map[string]string{name: omni})
+				require.NoError(t, err)
+				c.Set("model_mapping", string(mapping))
+			}
+			c.Set("task_request", map[string]any{"prompt": "waves"})
+			c.Set("group", "default")
+			c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})
+			reservation := &vertexOmniReservationStop{}
+			info := &relaycommon.RelayInfo{
+				OriginModelName: name, UserGroup: "default", UsingGroup: "default",
+				TaskRelayInfo: &relaycommon.TaskRelayInfo{}, Billing: reservation,
+			}
+			_, taskErr := relay.RelayTaskSubmit(c, info)
+			require.NotNil(t, taskErr)
+			assert.Equal(t, omni, info.UpstreamModelName)
+			extractions, err := plugin.Engine.Call(t.Context(), "extractionCount")
+			require.NoError(t, err)
+			if !tc.valid {
+				assert.Equal(t, "model_price_error", taskErr.Code)
+				assert.Contains(t, taskErr.Message, "pricing is not configured for plugin vertex-ai")
+				assert.Nil(t, info.TieredBillingSnapshot)
+				assert.EqualValues(t, 0, extractions, "invalid prices must be rejected before estimation")
+				assert.Zero(t, reservation.calls, "invalid prices must be rejected before reservation")
+				return
+			}
+			if tc.expression == "" {
+				assert.Nil(t, info.TieredBillingSnapshot)
+			} else {
+				require.NotNil(t, info.TieredBillingSnapshot, "submission error: %+v", taskErr)
+				assert.Equal(t, tc.expression, info.TieredBillingSnapshot.ExprString)
+			}
+			assert.NotEqual(t, "model_price_error", taskErr.Code)
+			assert.EqualValues(t, 1, extractions)
+			assert.Equal(t, 1, reservation.calls)
+			assert.Equal(t, tc.wantQuota, reservation.quota)
+		})
+	}
+}
+
+// Stop valid requests at reservation so the submission test cannot contact an upstream.
+type vertexOmniReservationStop struct {
+	calls, quota int
+}
+
+func (*vertexOmniReservationStop) Settle(int) error         { return nil }
+func (*vertexOmniReservationStop) Refund(*gin.Context)      {}
+func (*vertexOmniReservationStop) NeedsRefund() bool        { return false }
+func (*vertexOmniReservationStop) GetPreConsumedQuota() int { return 0 }
+func (*vertexOmniReservationStop) Reserve(int) error        { return nil }
+func (s *vertexOmniReservationStop) ReserveBeforeSubmit(quota int) error {
+	s.calls++
+	s.quota = quota
+	return errors.New("stop before upstream submission")
 }
 
 func loadVertexAIPlugin(t *testing.T) *jsplugin.LoadedPlugin {

@@ -143,9 +143,7 @@ it('keeps Export for administrators when user export is off', async () => {
     search: recentRange(),
   })
 
-  expect(
-    await screen.findByRole('button', { name: 'Export' })
-  ).toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Export' })).toBeVisible()
 })
 
 it('blocks a range longer than the configured limit before any request', async () => {
@@ -163,9 +161,26 @@ it('blocks a range longer than the configured limit before any request', async (
     'Export time range cannot exceed 7 days'
   )
   expect(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
+    within(screen.getByRole('dialog')).getByRole('button', {
+      name: 'Download CSV',
+    })
   ).toBeDisabled()
   expect(fetchSpy).not.toHaveBeenCalled()
+})
+
+it('uses the unified limit for both export actions', async () => {
+  const user = userEvent.setup()
+  renderExport({
+    role: ROLE.USER,
+    status: { log_max_range_days: 60, log_export_max_days: 1 },
+    search: { startTime: Date.now() - 40 * DAY_MS, endTime: Date.now() },
+  })
+
+  await user.click(await screen.findByRole('button', { name: 'Export' }))
+  const dialog = within(screen.getByRole('dialog'))
+  expect(dialog.getByRole('button', { name: 'Download CSV' })).toBeEnabled()
+  expect(dialog.getByRole('button', { name: 'Export' })).toBeEnabled()
+  expect(dialog.queryByRole('alert')).toBeNull()
 })
 
 it('downloads the streamed logs of the current filters as CSV', async () => {
@@ -201,7 +216,9 @@ it('downloads the streamed logs of the current filters as CSV', async () => {
 
   await user.click(await screen.findByRole('button', { name: 'Export' }))
   await user.click(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
+    within(screen.getByRole('dialog')).getByRole('button', {
+      name: 'Download CSV',
+    })
   )
 
   await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
@@ -239,7 +256,9 @@ it('reports a server refusal and keeps the dialog open without a download', asyn
 
   await user.click(await screen.findByRole('button', { name: 'Export' }))
   await user.click(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
+    within(screen.getByRole('dialog')).getByRole('button', {
+      name: 'Download CSV',
+    })
   )
 
   await waitFor(() =>
@@ -273,7 +292,9 @@ it('treats a stream that ends without the success line as a failed export', asyn
 
   await user.click(await screen.findByRole('button', { name: 'Export' }))
   await user.click(
-    within(screen.getByRole('dialog')).getByRole('button', { name: 'Download CSV' })
+    within(screen.getByRole('dialog')).getByRole('button', {
+      name: 'Download CSV',
+    })
   )
 
   await waitFor(() =>
@@ -283,13 +304,30 @@ it('treats a stream that ends without the success line as a failed export', asyn
 })
 
 it('creates the background export with the same personal scope and upstream filter', async () => {
-  const create = vi.spyOn(logExportApi, 'createLogExport').mockResolvedValue({ success: true })
+  const create = vi
+    .spyOn(logExportApi, 'createLogExport')
+    .mockResolvedValue({ success: true })
   const user = userEvent.setup()
-  renderExport({ role: ROLE.USER, search: { ...recentRange(), upstreamRequestId: 'up-42', model: 'gpt-%' } })
+  renderExport({
+    role: ROLE.USER,
+    search: { ...recentRange(), upstreamRequestId: 'up-42', model: 'gpt-%' },
+  })
   await user.click(await screen.findByRole('button', { name: 'Export' }))
-  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Export' }))
-  await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
-    scope: 'self', upstream_request_id: 'up-42', model_name: 'gpt-%',
-    columns: expect.arrayContaining(['request_id', 'cache_read', 'cache_write']),
-  })))
+  await user.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: 'Export' })
+  )
+  await waitFor(() =>
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'self',
+        upstream_request_id: 'up-42',
+        model_name: 'gpt-%',
+        columns: expect.arrayContaining([
+          'request_id',
+          'cache_read',
+          'cache_write',
+        ]),
+      })
+    )
+  )
 })

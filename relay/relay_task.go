@@ -260,6 +260,23 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		pluginKey = pinnedPlugin.Plugin.Meta.Key
 	}
 	exprStr, exists := billing_setting.ResolveTaskBillingExpr(pluginKey, modelName, info.UpstreamModelName)
+	if pinnedPlugin.Plugin != nil && pluginKey == "vertex-ai" && strings.HasPrefix(info.UpstreamModelName, "gemini-omni-") {
+		schema, _ := pinnedPlugin.Plugin.Meta.UsageForModels(info.UpstreamModelName, modelName)
+		input, hasInput := schema["input_tokens"]
+		output, hasOutput := schema["output_tokens"]
+		video, hasVideo := schema["video_tokens"]
+		omniTokenProfile := hasInput && hasOutput && hasVideo &&
+			input.Type == "number" && input.Unit == "token" &&
+			output.Type == "number" && output.Unit == "token" &&
+			video.Type == "number" && video.Unit == "token"
+		// The token profile replaces the old seconds multiplier. Require a
+		// compatible expression before estimation so an old per-call price
+		// cannot silently become a price multiplied by video token counts.
+		// Older uploaded profiles and already submitted tasks keep their rules.
+		if omniTokenProfile && (!exists || !billing_setting.TaskExprCompatible(exprStr, schema)) {
+			return nil, service.TaskErrorWrapper(fmt.Errorf("task model %s pricing is not configured for plugin %s", modelName, pluginKey), "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
+		}
+	}
 	useTiered := exists || billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr
 	if useTiered {
 		provider, supported := adaptor.(channel.TaskUsageFactsProvider)

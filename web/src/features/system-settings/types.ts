@@ -374,7 +374,6 @@ export type OperationsSettings = {
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
   AdminAuditMode: string
-  LogExportMaxDays: number
   LogExportFileRetentionHours: number
   'log_setting.user_export_enabled': boolean
   'log_setting.max_range_days': number

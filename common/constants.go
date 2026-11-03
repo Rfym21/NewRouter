@@ -28,7 +28,7 @@ var TaskEnabled = true
 var DataExportEnabled = true
 var DataExportInterval = 5           // unit: minute
 var DataExportDefaultTime = "hour"   // unit: minute
-var LogExportMaxDays = 30            // 单次日志导出允许的最大时间跨度，unit: day
+var LogExportMaxDays = 30            // Deprecated: compatibility mirror of log_setting.max_range_days.
 var LogExportFileRetentionHours = 24 // 导出文件生成后的保留时长，unit: hour
 var DefaultCollapseSidebar = false   // default value of collapse sidebar
 
@@ -183,6 +183,9 @@ var BatchUpdateInterval int
 var RelayTimeout int // unit is second
 
 var RelayIdleConnTimeout int // unit is second
+
+var RelayHTTP2PingIdleTimeout int // seconds without incoming frames before probing; 0 disables probes
+var RelayHTTP2PingTimeout int     // seconds to wait for a PING acknowledgement
 
 // RelayResponseHeaderTimeout limits how long the relay transport waits for the
 // upstream response headers after the request has been fully written.

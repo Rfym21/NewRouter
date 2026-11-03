@@ -75,11 +75,7 @@ func CreateLogExport(c *gin.Context) {
 		common.ApiErrorMsg(c, "请选择有效的导出时间范围")
 		return
 	}
-	maxDays := common.LogExportMaxDays
-	if maxDays < 1 {
-		maxDays = 1
-	}
-	maxDays = min(maxDays, max(operation_setting.GetLogSetting().MaxRangeDays, 1))
+	maxDays := max(operation_setting.GetLogSetting().MaxRangeDays, 1)
 	if req.EndTimestamp-req.StartTimestamp > int64(maxDays)*24*3600 {
 		common.ApiError(c, common.NewMessage("The time range cannot exceed {{days}} days", map[string]any{"days": maxDays}))
 		return

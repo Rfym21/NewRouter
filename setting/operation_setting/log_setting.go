@@ -21,7 +21,7 @@ type LogSetting struct {
 
 var logSetting = LogSetting{
 	UserExportEnabled: true,
-	MaxRangeDays:      365,
+	MaxRangeDays:      30,
 }
 
 func init() {

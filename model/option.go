@@ -201,6 +201,7 @@ func InitOptionMap() {
 }
 
 func loadOptionsFromDatabase() {
+	rangeOptions, rangeErr := migrateLogRangeOptions(nil)
 	requestPolicyOptionMutex.Lock()
 	defer requestPolicyOptionMutex.Unlock()
 	defer func() {
@@ -211,6 +212,23 @@ func loadOptionsFromDatabase() {
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	options, _ := AllOption()
+	if rangeErr != nil {
+		common.SysError("failed to merge log time range options: " + rangeErr.Error())
+		if len(rangeOptions) == 0 {
+			rangeOptions = mergedLogRangeOptions(options, operation_setting.GetLogSetting().MaxRangeDays, common.LogExportMaxDays)
+		}
+		// Enforce the conservative result even if persisting the migration
+		// failed; the next option refresh will retry the database update.
+		if len(rangeOptions) > 0 {
+			filtered := options[:0]
+			for _, option := range options {
+				if !isLogRangeOption(option.Key) {
+					filtered = append(filtered, option)
+				}
+			}
+			options = append(filtered, rangeOptions...)
+		}
+	}
 	passkeyOptions := make(map[string]string)
 	for _, option := range options {
 		if option.Key == "SystemName" && option.Value == "New API" {
@@ -280,7 +298,7 @@ func validateOptionValue(key string, value string) error {
 	if key == operation_setting.ChannelTestConcurrencyOptionKey {
 		return operation_setting.ValidateChannelTestConcurrency(value)
 	}
-	if key == operation_setting.LogMaxRangeDaysOptionKey {
+	if isLogRangeOption(key) {
 		return operation_setting.ValidateLogMaxRangeDays(value)
 	}
 	if key == "MaxTokenAutoGroups" {
@@ -290,6 +308,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if isLogRangeOption(key) {
+		return UpdateOptionsBulk(map[string]string{key: value})
+	}
 	if IsRequestPolicyOption(key) {
 		return UpdateRequestPolicyOptions(map[string]string{key: value})
 	}
@@ -325,6 +346,17 @@ func UpdateOption(key string, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	_, canonicalRange := values[operation_setting.LogMaxRangeDaysOptionKey]
+	_, legacyRange := values[legacyLogExportMaxDaysOptionKey]
+	if canonicalRange || legacyRange {
+		logRangeOptionMutex.Lock()
+		defer logRangeOptionMutex.Unlock()
+		var err error
+		values, err = logRangeOptionUpdates(values)
+		if err != nil {
+			return err
+		}
 	}
 	for key := range values {
 		if IsPasskeyDomainOption(key) {
@@ -393,6 +425,14 @@ func updateOptionMap(key string, value string) (err error) {
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
+	if isLogRangeOption(key) {
+		value = strconv.Itoa(normalizedLogRangeDays(value))
+		common.OptionMap[operation_setting.LogMaxRangeDaysOptionKey] = value
+		common.OptionMap[legacyLogExportMaxDaysOptionKey] = value
+		common.LogExportMaxDays = normalizedLogRangeDays(value)
+		handleConfigUpdate(operation_setting.LogMaxRangeDaysOptionKey, value)
+		return nil
+	}
 	common.OptionMap[key] = value
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
@@ -664,11 +704,6 @@ func updateOptionMap(key string, value string) (err error) {
 		common.DataExportInterval, _ = strconv.Atoi(value)
 	case "DataExportDefaultTime":
 		common.DataExportDefaultTime = value
-	case "LogExportMaxDays":
-		common.LogExportMaxDays, _ = strconv.Atoi(value)
-		if common.LogExportMaxDays < 1 {
-			common.LogExportMaxDays = 1
-		}
 	case "LogExportFileRetentionHours":
 		common.LogExportFileRetentionHours, _ = strconv.Atoi(value)
 		if common.LogExportFileRetentionHours < 1 {

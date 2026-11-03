@@ -107,6 +107,13 @@ function TableFixture(props: { prices: PricingSyncModels }) {
     />
   )
 }
+async function selectPriceStatus(
+  user: ReturnType<typeof userEvent.setup>,
+  option: string
+) {
+  await user.click(screen.getByRole('combobox', { name: 'Price status' }))
+  await user.click(await screen.findByRole('option', { name: option }))
+}
 afterEach(() => {
   cleanup()
   useSystemConfigStore
@@ -288,6 +295,169 @@ describe('pricing synchronization', () => {
     expect(
       screen.getByRole('checkbox', { name: 'Select price for m from upstream' })
     ).not.toBeChecked()
+  })
+
+  it('filters unset and differing prices without treating explicit zero prices as unset', async () => {
+    const unchangedExpression = {
+      billing_mode: 'tiered_expr',
+      billing_expr: expression,
+    }
+    render(
+      <TableFixture
+        prices={{
+          missing: { current: {}, upstreams: { upstream: { model_price: 2 } } },
+          'empty-expression': {
+            current: { billing_mode: 'tiered_expr', billing_expr: ' ' },
+            upstreams: { upstream: unchangedExpression },
+          },
+          'free-request': {
+            current: { model_price: 0 },
+            upstreams: { upstream: { model_price: 0 } },
+          },
+          'free-token': {
+            current: { model_ratio: 0 },
+            upstreams: { upstream: { model_ratio: 0 } },
+          },
+          'changed-output': {
+            current: { model_ratio: 1, completion_ratio: 2 },
+            upstreams: { upstream: { model_ratio: 1, completion_ratio: 3 } },
+          },
+          'changed-expression': {
+            current: unchangedExpression,
+            upstreams: {
+              upstream: {
+                ...unchangedExpression,
+                billing_expr: expression.replace('p * 2', 'p * 3'),
+              },
+            },
+          },
+          'same-expression': {
+            current: unchangedExpression,
+            upstreams: { upstream: unchangedExpression },
+          },
+          'rounding-only': {
+            current: { model_ratio: 1 },
+            upstreams: { upstream: { model_ratio: 1 + 5e-10 } },
+          },
+        }}
+      />
+    )
+    const user = userEvent.setup()
+    for (const model of [
+      'missing',
+      'empty-expression',
+      'changed-output',
+      'changed-expression',
+    ]) {
+      expect(screen.getByText(model)).toBeVisible()
+    }
+    for (const model of [
+      'free-request',
+      'free-token',
+      'same-expression',
+      'rounding-only',
+    ]) {
+      expect(screen.queryByText(model)).not.toBeInTheDocument()
+    }
+
+    await selectPriceStatus(user, 'Only show models with unset prices')
+    expect(screen.getByText('missing')).toBeVisible()
+    expect(screen.getByText('empty-expression')).toBeVisible()
+    for (const model of [
+      'changed-output',
+      'changed-expression',
+      'free-request',
+      'free-token',
+      'same-expression',
+    ]) {
+      expect(screen.queryByText(model)).not.toBeInTheDocument()
+    }
+
+    await selectPriceStatus(user, 'All models')
+    for (const model of [
+      'free-request',
+      'free-token',
+      'same-expression',
+      'rounding-only',
+    ]) {
+      expect(screen.getByText(model)).toBeVisible()
+    }
+    await selectPriceStatus(user, 'Only show models with different prices')
+    expect(screen.getByText('changed-output')).toBeVisible()
+    expect(screen.getByText('changed-expression')).toBeVisible()
+    expect(screen.queryByText('rounding-only')).not.toBeInTheDocument()
+    expect(screen.queryByText('same-expression')).not.toBeInTheDocument()
+  })
+
+  it('limits source-wide selection to visible price-status results and explains retained hidden selections', async () => {
+    render(
+      <TableFixture
+        prices={{
+          missing: { current: {}, upstreams: { upstream: { model_price: 2 } } },
+          different: {
+            current: { model_price: 1 },
+            upstreams: { upstream: { model_price: 2 } },
+          },
+          matching: {
+            current: { model_price: 2 },
+            upstreams: { upstream: { model_price: 2 } },
+          },
+        }}
+      />
+    )
+    const user = userEvent.setup()
+    await selectPriceStatus(user, 'All models')
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: 'Select price for matching from upstream',
+      })
+    )
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: 'Select price for different from upstream',
+      })
+    )
+    await selectPriceStatus(user, 'Only show models with unset prices')
+    expect(
+      screen.getByText('Selected models hidden by filters: 2')
+    ).toBeVisible()
+    expect(screen.queryByText('matching')).not.toBeInTheDocument()
+    expect(screen.queryByText('different')).not.toBeInTheDocument()
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all prices from upstream' })
+    )
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Select price for missing from upstream',
+      })
+    ).toBeChecked()
+
+    await selectPriceStatus(user, 'Only show models with different prices')
+    expect(
+      screen.getByText('Selected models hidden by filters: 1')
+    ).toBeVisible()
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Select all prices from upstream' })
+    )
+    await selectPriceStatus(user, 'All models')
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Select price for matching from upstream',
+      })
+    ).toBeChecked()
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Select price for different from upstream',
+      })
+    ).not.toBeChecked()
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'Select price for missing from upstream',
+      })
+    ).not.toBeChecked()
+    expect(
+      screen.queryByText(/Selected models hidden by filters:/)
+    ).not.toBeInTheDocument()
   })
 
   it('replaces the selected pricing bundle without mixing legacy fields into expressions', () => {
@@ -914,9 +1084,7 @@ it('allows matching prices to be selected and adjusted in the mobile list', asyn
       name: 'Select price for same from Upstream(7)',
     })
   ).not.toBeInTheDocument()
-  await user.click(
-    screen.getByRole('checkbox', { name: 'Show models with matching prices' })
-  )
+  await selectPriceStatus(user, 'All models')
   await user.click(
     screen.getByRole('checkbox', {
       name: 'Select price for same from Upstream(7)',
@@ -934,6 +1102,58 @@ it('allows matching prices to be selected and adjusted in the mobile list', asyn
   expect(screen.getByRole('alertdialog')).toHaveTextContent('Per-request: $1')
   await user.click(screen.getByRole('button', { name: 'Confirm Changes' }))
   await waitFor(() => expect(patch).toHaveBeenCalled())
+})
+
+it('includes previously selected hidden models explicitly in the count and confirmation without syncing unselected models', async () => {
+  const { user, patch } = await renderAdjustmentSync({
+    missing: { current: {}, upstreams: { 'Upstream(7)': { model_price: 7 } } },
+    different: {
+      current: { model_price: 1 },
+      upstreams: { 'Upstream(7)': { model_price: 7 } },
+    },
+    matching: {
+      current: { model_price: 7 },
+      upstreams: { 'Upstream(7)': { model_price: 7 } },
+    },
+    untouched: {
+      current: {},
+      upstreams: { 'Upstream(7)': { model_price: 14 } },
+    },
+  })
+  await selectPriceStatus(user, 'All models')
+  for (const model of ['matching', 'different']) {
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: `Select price for ${model} from Upstream(7)`,
+      })
+    )
+  }
+  await selectPriceStatus(user, 'Only show models with unset prices')
+  await user.click(
+    screen.getByRole('checkbox', {
+      name: 'Select price for missing from Upstream(7)',
+    })
+  )
+  expect(screen.getByText('3 selected models')).toBeVisible()
+  expect(screen.getByText('Selected models hidden by filters: 2')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Apply Sync' }))
+  const dialog = screen.getByRole('alertdialog')
+  for (const model of ['missing', 'different', 'matching']) {
+    expect(within(dialog).getByText(model)).toBeVisible()
+  }
+  expect(within(dialog).queryByText('untouched')).not.toBeInTheDocument()
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Confirm Changes' })
+  )
+  await waitFor(() => expect(patch).toHaveBeenCalled())
+  expect(patch.mock.calls[0][1]).toHaveProperty('changes.length', 3)
+  expect(patch.mock.calls[0][1]).toMatchObject({
+    changes: expect.arrayContaining(
+      ['missing', 'different', 'matching'].map((model_name) =>
+        expect.objectContaining({ model_name })
+      )
+    ),
+  })
 })
 
 it('blocks unsupported expressions until restored and disables conversion for invalid site rates', async () => {

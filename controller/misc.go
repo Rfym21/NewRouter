@@ -82,7 +82,7 @@ func GetStatus(c *gin.Context) {
 		"enable_task":                   common.TaskEnabled,
 		"enable_data_export":            common.DataExportEnabled,
 		"data_export_default_time":      common.DataExportDefaultTime,
-		"log_export_max_days":           common.LogExportMaxDays,
+		"log_export_max_days":           operation_setting.GetLogSetting().MaxRangeDays,
 		"default_collapse_sidebar":      common.DefaultCollapseSidebar,
 		"mj_notify_enabled":             setting.MjNotifyEnabled,
 		"chats":                         setting.Chats,

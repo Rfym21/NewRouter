@@ -62,7 +62,6 @@ import { ServerLogFiles } from './server-log-files'
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
   AdminAuditMode: z.string(),
-  LogExportMaxDays: z.number().int().min(1).max(365),
   LogExportFileRetentionHours: z.number().int().min(1).max(8760),
   log_setting: z.object({
     user_export_enabled: z.boolean(),
@@ -76,7 +75,6 @@ type LogSettingsSectionProps = {
   defaultValues: {
     LogConsumeEnabled: boolean
     AdminAuditMode: string
-    LogExportMaxDays: number
     LogExportFileRetentionHours: number
     'log_setting.user_export_enabled': boolean
     'log_setting.max_range_days': number
@@ -92,7 +90,6 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
     () => ({
       LogConsumeEnabled: props.defaultValues.LogConsumeEnabled,
       AdminAuditMode: props.defaultValues.AdminAuditMode,
-      LogExportMaxDays: props.defaultValues.LogExportMaxDays,
       LogExportFileRetentionHours:
         props.defaultValues.LogExportFileRetentionHours,
       log_setting: {
@@ -115,7 +112,6 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
     const changes = [
       ['LogConsumeEnabled', values.LogConsumeEnabled],
       ['AdminAuditMode', values.AdminAuditMode],
-      ['LogExportMaxDays', values.LogExportMaxDays],
       ['LogExportFileRetentionHours', values.LogExportFileRetentionHours],
       [
         'log_setting.user_export_enabled',
@@ -260,7 +256,7 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                 name='log_setting.max_range_days'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Longest log time range (days)')}</FormLabel>
+                    <FormLabel>{t('Log time range limit (days)')}</FormLabel>
                     <FormControl>
                       <Input
                         type='number'
@@ -271,7 +267,7 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                     </FormControl>
                     <FormDescription>
                       {t(
-                        'The longest time range a user can view at once in the logs and on the dashboard, and the longest range any export can cover.'
+                        'Applies to user log and dashboard queries, direct CSV downloads, and background log exports.'
                       )}
                     </FormDescription>
                     <FormMessage />

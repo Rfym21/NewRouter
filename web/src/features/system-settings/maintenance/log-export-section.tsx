@@ -32,7 +32,6 @@ import { Input } from '@/components/ui/input'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 
 type LogExportFormValues = {
-  LogExportMaxDays: number
   LogExportFileRetentionHours: number
 }
 
@@ -41,52 +40,27 @@ export function LogExportFields() {
   const form = useFormContext<LogExportFormValues>()
 
   return (
-    <>
-      <FormField
-        control={form.control}
-        name='LogExportMaxDays'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t('Max export range (days)')}</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                min={1}
-                max={365}
-                step={1}
-                {...safeNumberFieldProps(field)}
-              />
-            </FormControl>
-            <FormDescription>
-              {t('Maximum time span allowed for a single log export')}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={form.control}
-        name='LogExportFileRetentionHours'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t('File retention (hours)')}</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                min={1}
-                max={8760}
-                step={1}
-                {...safeNumberFieldProps(field)}
-              />
-            </FormControl>
-            <FormDescription>
-              {t('How long a generated export file is kept before it expires')}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-    </>
+    <FormField
+      control={form.control}
+      name='LogExportFileRetentionHours'
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>{t('File retention (hours)')}</FormLabel>
+          <FormControl>
+            <Input
+              type='number'
+              min={1}
+              max={8760}
+              step={1}
+              {...safeNumberFieldProps(field)}
+            />
+          </FormControl>
+          <FormDescription>
+            {t('How long a generated export file is kept before it expires')}
+          </FormDescription>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
   )
 }

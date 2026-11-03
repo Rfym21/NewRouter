@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 import { authRequestOptions } from '@/lib/secure-verification'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   AuditLogCleanupResponse,
@@ -38,6 +39,40 @@ import type {
 export async function getSystemOptions() {
   const res = await api.get<SystemOptionsResponse>('/api/option/')
   return res.data
+}
+
+export type AnonymizationRule = {
+  name: string
+  mode: 'literal' | 'regex'
+  pattern: string
+  enabled: boolean
+  entity_type?: string
+  capture_group?: number
+}
+
+export type AnonymizationPreview = {
+  match_count?: number
+  truncated?: boolean
+  matches: Array<{
+    text: string
+    entity_type: string
+    rule_name?: string
+    start: number
+    end: number
+  }>
+  anonymized: string
+}
+
+export async function previewAnonymization(
+  request: { rules: AnonymizationRule[]; text: string },
+  signal?: AbortSignal
+) {
+  const response = await api.post<{
+    success: boolean
+    message?: string
+    data: AnonymizationPreview
+  }>('/api/option/anonymization/preview', request, { signal })
+  return requireServerSuccess(response.data).data
 }
 
 export async function updateSystemOption(request: UpdateOptionRequest) {

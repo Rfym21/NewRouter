@@ -35,7 +35,15 @@ import { useAuthStore } from '@/stores/auth-store'
 import { SettingsPageProvider } from '../../components/settings-page-context'
 import { LogSettingsSection } from '../log-settings-section'
 
-function Fixture() {
+type AuditDefaults = {
+  auditLogEnabled?: boolean
+  adminAuditMode?: string
+}
+
+function Fixture({
+  auditLogEnabled = true,
+  adminAuditMode = 'billing_only',
+}: AuditDefaults) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
   return (
     <>
@@ -44,7 +52,8 @@ function Fixture() {
         <LogSettingsSection
           defaultValues={{
             LogConsumeEnabled: true,
-            AdminAuditMode: 'billing_only',
+            AuditLogEnabled: auditLogEnabled,
+            AdminAuditMode: adminAuditMode,
             LogExportFileRetentionHours: 24,
             'log_setting.user_export_enabled': true,
             'log_setting.max_range_days': 30,
@@ -55,13 +64,13 @@ function Fixture() {
   )
 }
 
-async function renderSettings() {
+async function renderSettings(auditDefaults: AuditDefaults = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   render(
     <QueryClientProvider client={client}>
-      <Fixture />
+      <Fixture {...auditDefaults} />
     </QueryClientProvider>
   )
   return screen.findByRole('spinbutton', {
@@ -104,10 +113,13 @@ test('recording, export and cleanup modules share the log settings page', async 
     'Server Log Management',
   ])
   const recording = screen.getByRole('group', { name: 'Log recording' })
-  expect(within(recording).getAllByRole('switch')).toHaveLength(1)
+  expect(within(recording).getAllByRole('switch')).toHaveLength(2)
   expect(
     within(recording).getByRole('switch', { name: 'Record quota usage' })
   ).toBeVisible()
+  expect(
+    within(recording).getByRole('switch', { name: 'Record audit logs' })
+  ).toBeChecked()
   const search = screen.getByRole('group', { name: 'Log search and export' })
   expect(
     within(search).getByRole('spinbutton', {
@@ -220,4 +232,81 @@ test('a time range under one day shows a field error and is not saved', async ()
 
   await waitFor(() => expect(days).toHaveAttribute('aria-invalid', 'true'))
   expect(api.put).not.toHaveBeenCalled()
+})
+
+test('turning audit recording off disables its scope and saves only the audit switch', async () => {
+  const user = userEvent.setup()
+  await renderSettings({ adminAuditMode: 'full_audit' })
+  const auditSwitch = screen.getByRole('switch', { name: 'Record audit logs' })
+  const auditScope = screen.getByRole('combobox', {
+    name: 'Admin operation audit scope',
+  })
+  expect(auditScope).toHaveTextContent('All admin write operations')
+  expect(auditScope).toBeEnabled()
+
+  await user.click(auditSwitch)
+
+  expect(auditSwitch).not.toBeChecked()
+  expect(auditScope).toBeDisabled()
+  expect(auditScope).toHaveTextContent('All admin write operations')
+  expect(
+    screen.getByRole('switch', { name: 'Record quota usage' })
+  ).toBeChecked()
+  expect(screen.getByRole('button', { name: 'Clear audit logs' })).toBeEnabled()
+
+  await user.click(screen.getByRole('button', { name: 'Save log settings' }))
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'AuditLogEnabled',
+    value: false,
+  })
+})
+
+test('turning audit recording back on restores the saved audit scope', async () => {
+  const user = userEvent.setup()
+  await renderSettings({ auditLogEnabled: false, adminAuditMode: 'full_audit' })
+  const auditSwitch = screen.getByRole('switch', { name: 'Record audit logs' })
+  const auditScope = screen.getByRole('combobox', {
+    name: 'Admin operation audit scope',
+  })
+  expect(auditSwitch).not.toBeChecked()
+  expect(auditScope).toBeDisabled()
+
+  await user.click(auditSwitch)
+
+  expect(auditSwitch).toBeChecked()
+  expect(auditScope).toBeEnabled()
+  expect(auditScope).toHaveTextContent('All admin write operations')
+  await user.click(screen.getByRole('button', { name: 'Save log settings' }))
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'AuditLogEnabled',
+    value: true,
+  })
+})
+
+test('a failed audit switch save can be retried without losing the chosen value', async () => {
+  const user = userEvent.setup()
+  vi.mocked(api.put)
+    .mockResolvedValueOnce({ data: { success: false, message: 'Save failed' } })
+    .mockResolvedValueOnce({ data: { success: true } })
+  await renderSettings()
+  const auditSwitch = screen.getByRole('switch', { name: 'Record audit logs' })
+  const saveButton = screen.getByRole('button', { name: 'Save log settings' })
+
+  await user.click(auditSwitch)
+  await user.click(saveButton)
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(saveButton).toBeEnabled())
+  expect(auditSwitch).not.toBeChecked()
+
+  await user.click(saveButton)
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2))
+  expect(api.put).toHaveBeenLastCalledWith('/api/option/', {
+    key: 'AuditLogEnabled',
+    value: false,
+  })
 })

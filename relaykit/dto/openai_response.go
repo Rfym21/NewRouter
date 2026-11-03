@@ -80,18 +80,38 @@ type FlexibleEmbeddingResponse struct {
 }
 
 type ChatCompletionsStreamResponseChoice struct {
+	Text         *string                                  `json:"text,omitempty"`
 	Delta        ChatCompletionsStreamResponseChoiceDelta `json:"delta"`
 	Logprobs     *any                                     `json:"logprobs"`
 	FinishReason *string                                  `json:"finish_reason"`
 	Index        int                                      `json:"index"`
 }
 
+// ToolCallsForConversion exposes a legacy function_call as one indexed tool.
+// The native response and its billing metadata remain unchanged. Modern
+// tool_calls take precedence if a compatibility gateway supplies both shapes.
+func (c ChatCompletionsStreamResponseChoice) ToolCallsForConversion(responseID string) []ToolCallResponse {
+	if len(c.Delta.ToolCalls) > 0 {
+		return c.Delta.ToolCalls
+	}
+	if c.Delta.FunctionCall == nil {
+		return nil
+	}
+	index := 0
+	return []ToolCallResponse{{
+		Index: &index, ID: fmt.Sprintf("call_%s_legacy_%d", responseID, c.Index),
+		Type: "function", Function: *c.Delta.FunctionCall,
+	}}
+}
+
 type ChatCompletionsStreamResponseChoiceDelta struct {
 	Content          *string            `json:"content,omitempty"`
+	Refusal          *string            `json:"refusal,omitempty"`
 	ReasoningContent *string            `json:"reasoning_content,omitempty"`
 	Reasoning        *string            `json:"reasoning,omitempty"`
 	Role             string             `json:"role,omitempty"`
 	ToolCalls        []ToolCallResponse `json:"tool_calls,omitempty"`
+	FunctionCall     *FunctionResponse  `json:"function_call,omitempty"`
 	// Annotations is an OpenAI-compatible streaming extension supported by
 	// providers such as OpenRouter. Relaykit uses it to preserve streaming URL
 	// citations, including Claude round-trip metadata.

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -377,10 +376,16 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 	accumulator := service.NewResponsesUsageAccumulator(info)
 	session := anonymizer.FromContext(c)
 	clientOutput := &responsesWSOutputRestorer{
-		info: info, session: session, restorer: session.NewStreamRestorer(),
-		pending: make(map[string]responsesWSMessage),
+		info: info, session: session, events: session.NewResponsesStreamRestorer(),
 	}
 	restoreIncoming := func(incoming responsesWSMessage, event *dto.ResponsesStreamResponse) responsesWSMessage {
+		if err := anonymizer.ObserveResponse(c, incoming.body); err != nil {
+			info.StreamStatus.RecordError("failed to preserve anonymization state")
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonHandlerStop, err)
+			s.shutdown(websocket.CloseInternalServerErr, "failed to preserve anonymization state")
+			body, _ := common.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": "server_error", "message": "Failed to preserve anonymization state"}})
+			return responsesWSMessage{kind: websocket.TextMessage, body: body}
+		}
 		messages, err := clientOutput.restore(incoming, event)
 		if err != nil {
 			logger.LogError(c, "failed to restore Responses WebSocket output: "+err.Error())
@@ -556,98 +561,40 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 // responsesWSOutputRestorer keeps upstream accounting intact while applying the
 // same client-facing model and text transformations used by Responses SSE.
 type responsesWSOutputRestorer struct {
-	info     *relaycommon.RelayInfo
-	session  *anonymizer.Session
-	restorer *anonymizer.StreamRestorer
-	pending  map[string]responsesWSMessage
+	info    *relaycommon.RelayInfo
+	session *anonymizer.Session
+	events  *anonymizer.ResponsesStreamRestorer
 }
 
 func (r *responsesWSOutputRestorer) restore(message responsesWSMessage, event *dto.ResponsesStreamResponse) ([]responsesWSMessage, error) {
-	var output []responsesWSMessage
-	if r.restorer != nil {
-		switch event.Type {
-		case "response.output_text.delta", "response.reasoning_summary_text.delta":
-			key := responsesWSOutputKey(event)
-			r.pending[key] = message
-			delta := r.restorer.Push(key, event.Delta)
-			body, err := ojson.SetBytes(message.body, "delta", delta)
-			if err != nil {
-				return nil, err
-			}
-			message.body = relaycommon.ApplyResponseModelNameBytes(body, r.info)
-			return []responsesWSMessage{message}, nil
-		case "response.output_text.done", "response.reasoning_summary_text.done":
-			messages, err := r.flush(responsesWSOutputKey(event))
-			if err != nil {
-				return nil, err
-			}
-			output = append(output, messages...)
-		case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled", "error":
-			messages, err := r.flush("")
-			if err != nil {
-				return nil, err
-			}
-			output = append(output, messages...)
-		}
+	if r.events == nil {
+		r.events = r.session.NewResponsesStreamRestorer()
 	}
-	if r.session != nil {
-		body, err := anonymizer.DeanonymizeTextFields(message.body, r.session)
-		if err != nil {
-			return nil, err
-		}
-		message.body = body
+	payloads, err := r.events.Restore(message.body)
+	if err != nil {
+		return nil, err
 	}
-	message.body = relaycommon.ApplyResponseModelNameBytes(message.body, r.info)
-	return append(output, message), nil
+	messages := make([]responsesWSMessage, 0, len(payloads))
+	for _, payload := range payloads {
+		messages = append(messages, responsesWSMessage{
+			kind: message.kind, body: relaycommon.ApplyResponseModelNameBytes(payload, r.info),
+		})
+	}
+	return messages, nil
 }
 
-func (r *responsesWSOutputRestorer) flush(key string) ([]responsesWSMessage, error) {
-	if r.restorer == nil {
-		return nil, nil
+func (r *responsesWSOutputRestorer) flush(_ string) ([]responsesWSMessage, error) {
+	payloads, err := r.events.Flush()
+	if err != nil {
+		return nil, err
 	}
-	keys := []string{key}
-	if key == "" {
-		keys = r.restorer.PendingKeys()
-		slices.Sort(keys)
+	messages := make([]responsesWSMessage, 0, len(payloads))
+	for _, payload := range payloads {
+		messages = append(messages, responsesWSMessage{
+			kind: websocket.TextMessage, body: relaycommon.ApplyResponseModelNameBytes(payload, r.info),
+		})
 	}
-	var output []responsesWSMessage
-	for _, key := range keys {
-		message, exists := r.pending[key]
-		delete(r.pending, key)
-		delta := r.restorer.Flush(key)
-		if !exists || delta == "" {
-			continue
-		}
-		body, err := ojson.SetBytes(message.body, "delta", delta)
-		if err != nil {
-			return nil, err
-		}
-		// Synthetic residuals must not reuse an upstream sequence number.
-		body, err = ojson.DeleteBytes(body, "sequence_number")
-		if err != nil {
-			return nil, err
-		}
-		message.body = relaycommon.ApplyResponseModelNameBytes(body, r.info)
-		output = append(output, message)
-	}
-	return output, nil
-}
-
-func responsesWSOutputKey(event *dto.ResponsesStreamResponse) string {
-	family := "output_text"
-	part := event.ContentIndex
-	if strings.HasPrefix(event.Type, "response.reasoning_summary_text") {
-		family = "reasoning_summary"
-		part = event.SummaryIndex
-	}
-	outputIndex, partIndex := 0, 0
-	if event.OutputIndex != nil {
-		outputIndex = *event.OutputIndex
-	}
-	if part != nil {
-		partIndex = *part
-	}
-	return family + "\x00" + event.ItemID + "\x00" + strconv.Itoa(outputIndex) + "\x00" + strconv.Itoa(partIndex)
+	return messages, nil
 }
 
 // A single generation is active, but a cancel can fail independently. Correlate

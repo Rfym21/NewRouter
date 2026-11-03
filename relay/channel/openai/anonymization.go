@@ -1,7 +1,9 @@
 package openai
 
 import (
+	"sort"
 	"strconv"
+	"strings"
 
 	"new-router/common"
 	"new-router/dto"
@@ -13,40 +15,19 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// deanonymizeChatStreamChunk restores anonymized values in a typed
-// chat.completion.chunk, reassembling surrogates split across SSE chunks via the
-// per-stream carry buffer (keyed by choice index + field). Tool-call arguments use
-// the stateless whole-value restore. When restorer is nil (anonymization disabled)
-// or no session is attached, the chunk is left byte-identical.
+// Typed conversion paths share the raw protocol transformer so legacy
+// function_call, parallel tool calls, and finish-time tails behave identically.
 func deanonymizeChatStreamChunk(c *gin.Context, chunk *dto.ChatCompletionsStreamResponse, restorer *anonymizer.StreamRestorer) {
 	if restorer == nil || chunk == nil {
 		return
 	}
-	session := anonymizer.FromContext(c)
-	if session == nil {
+	data, err := common.Marshal(chunk)
+	if err != nil {
 		return
 	}
-	for i := range chunk.Choices {
-		choice := &chunk.Choices[i]
-		key := strconv.Itoa(choice.Index)
-		if choice.Delta.Content != nil {
-			restored := restorer.Push(key+":content", *choice.Delta.Content)
-			choice.Delta.Content = &restored
-		}
-		if choice.Delta.ReasoningContent != nil {
-			restored := restorer.Push(key+":reasoning_content", *choice.Delta.ReasoningContent)
-			choice.Delta.ReasoningContent = &restored
-		}
-		if choice.Delta.Reasoning != nil {
-			restored := restorer.Push(key+":reasoning", *choice.Delta.Reasoning)
-			choice.Delta.Reasoning = &restored
-		}
-		for j := range choice.Delta.ToolCalls {
-			args := choice.Delta.ToolCalls[j].Function.Arguments
-			if args != "" {
-				choice.Delta.ToolCalls[j].Function.Arguments = session.DeanonymizeString(args)
-			}
-		}
+	restored, err := deanonymizeStreamChunk(c, string(data), restorer)
+	if err == nil {
+		_ = common.UnmarshalJsonStr(restored, chunk)
 	}
 }
 
@@ -57,8 +38,6 @@ func deanonymizeResponseBytes(c *gin.Context, data []byte) ([]byte, error) {
 	}
 	restored, err := anonymizer.DeanonymizeTextFields(data, session)
 	if err != nil {
-		// Best-effort: an unparseable chunk (e.g. a non-JSON keepalive line) has
-		// no restorable content — pass it through rather than aborting the stream.
 		if common.DebugEnabled {
 			logger.LogDebug(c, "deanonymize response skipped (unparseable): %s", err.Error())
 		}
@@ -72,76 +51,189 @@ func deanonymizeResponseString(c *gin.Context, data string) (string, error) {
 		return data, nil
 	}
 	out, err := deanonymizeResponseBytes(c, []byte(data))
-	if err != nil {
-		return data, err
-	}
-	return string(out), nil
+	return string(out), err
 }
 
-// streamDeltaTextFields are the incremental-text fields of a chat.completion.chunk
-// delta that are reassembled across SSE chunks by the carry buffer.
-var streamDeltaTextFields = []string{"content", "reasoning_content", "reasoning"}
+var streamDeltaTextFields = []string{"content", "refusal", "reasoning_content", "reasoning"}
 
-// deanonymizeStreamChunk restores anonymized values in one chat.completion.chunk,
-// reassembling surrogates that are split across SSE chunks via the per-stream
-// carry buffer. Incremental text fields are routed through restorer.Push (keyed
-// per choice index + field); tool-call arguments keep the stateless whole-value
-// restore (cross-chunk JSON-fragment reassembly is out of scope). It edits only
-// those string fields via sjson so all other bytes (id/created/usage/…) are
-// preserved verbatim. When restorer is nil (anonymization disabled) it falls back
-// to the stateless whole-chunk restore, keeping behavior byte-identical.
+// deanonymizeStreamChunk edits only text/argument slots. Accounting fields and
+// unknown extensions retain their original JSON bytes. Argument fragments have
+// their inner JSON decoded/restored/re-escaped before the outer SSE serialization.
 func deanonymizeStreamChunk(c *gin.Context, data string, restorer *anonymizer.StreamRestorer) (string, error) {
 	if restorer == nil {
 		return deanonymizeResponseString(c, data)
 	}
-	session := anonymizer.FromContext(c)
-	if session == nil {
+	if anonymizer.FromContext(c) == nil {
 		return data, nil
 	}
 	choices := gjson.Get(data, "choices")
 	if !choices.IsArray() {
-		// Unexpected shape (e.g. a non-chunk line) — fall back to stateless restore.
 		return deanonymizeResponseString(c, data)
 	}
 	out := data
 	for pos, choice := range choices.Array() {
 		logicalIdx := pos
-		if v := choice.Get("index"); v.Exists() {
-			logicalIdx = int(v.Int())
+		if index := choice.Get("index"); index.Exists() {
+			logicalIdx = int(index.Int())
 		}
-		delta := choice.Get("delta")
-		if !delta.Exists() {
-			continue
-		}
-		posStr := strconv.Itoa(pos)
-		for _, field := range streamDeltaTextFields {
-			fv := delta.Get(field)
-			if fv.Type != gjson.String {
-				continue
-			}
-			flushed := restorer.Push(strconv.Itoa(logicalIdx)+":"+field, fv.String())
-			if patched, err := sjson.Set(out, "choices."+posStr+".delta."+field, flushed); err == nil {
+		base := "choices." + strconv.Itoa(pos)
+		key := strconv.Itoa(logicalIdx)
+		set := func(path, value string) error {
+			patched, err := sjson.Set(out, path, value)
+			if err == nil {
 				out = patched
 			}
+			return err
 		}
-		toolCalls := delta.Get("tool_calls")
-		if !toolCalls.IsArray() {
-			continue
+		if text := choice.Get("text"); text.Type == gjson.String {
+			if err := set(base+".text", restorer.Push(key+":text", text.String())); err != nil {
+				return data, err
+			}
 		}
-		for tpos, tc := range toolCalls.Array() {
-			args := tc.Get("function.arguments")
+		for _, field := range streamDeltaTextFields {
+			value := choice.Get("delta." + field)
+			if value.Type == gjson.String {
+				if err := set(base+".delta."+field, restorer.Push(key+":"+field, value.String())); err != nil {
+					return data, err
+				}
+			}
+		}
+		if args := choice.Get("delta.function_call.arguments"); args.Type == gjson.String {
+			if err := set(base+".delta.function_call.arguments", restorer.PushJSON(key+":function_call", args.String())); err != nil {
+				return data, err
+			}
+		}
+		for toolPos, tool := range choice.Get("delta.tool_calls").Array() {
+			args := tool.Get("function.arguments")
 			if args.Type != gjson.String {
 				continue
 			}
-			restored := session.DeanonymizeString(args.String())
-			if restored == args.String() {
-				continue
+			toolIdx := toolPos
+			if index := tool.Get("index"); index.Exists() {
+				toolIdx = int(index.Int())
 			}
-			path := "choices." + posStr + ".delta.tool_calls." + strconv.Itoa(tpos) + ".function.arguments"
-			if patched, err := sjson.Set(out, path, restored); err == nil {
-				out = patched
+			path := base + ".delta.tool_calls." + strconv.Itoa(toolPos) + ".function.arguments"
+			if err := set(path, restorer.PushJSON(key+":tool:"+strconv.Itoa(toolIdx), args.String())); err != nil {
+				return data, err
+			}
+		}
+		if finish := choice.Get("finish_reason"); finish.Type == gjson.String && finish.String() != "" {
+			// Append held tails to this choice's finish frame so no restored
+			// content can appear after its finish_reason.
+			for _, field := range append([]string{"text"}, streamDeltaTextFields...) {
+				path := base + ".delta." + field
+				if field == "text" {
+					path = base + ".text"
+				}
+				if tail := restorer.Flush(key + ":" + field); tail != "" {
+					if err := set(path, gjson.Get(out, path).String()+tail); err != nil {
+						return data, err
+					}
+				}
+			}
+			for _, jsonKey := range restorer.PendingJSONKeys() {
+				if !strings.HasPrefix(jsonKey, key+":") {
+					continue
+				}
+				tail := restorer.FlushJSON(jsonKey)
+				if tail == "" {
+					continue
+				}
+				path := base + ".delta.function_call.arguments"
+				if toolIndex, ok := strings.CutPrefix(jsonKey, key+":tool:"); ok {
+					index, _ := strconv.Atoi(toolIndex)
+					toolPosition := -1
+					for candidatePos, candidate := range gjson.Get(out, base+".delta.tool_calls").Array() {
+						candidateIndex := candidatePos
+						if v := candidate.Get("index"); v.Exists() {
+							candidateIndex = int(v.Int())
+						}
+						if candidateIndex == index {
+							toolPosition = candidatePos
+							break
+						}
+					}
+					if toolPosition < 0 {
+						toolPosition = len(gjson.Get(out, base+".delta.tool_calls").Array())
+						patched, err := sjson.Set(out, base+".delta.tool_calls."+strconv.Itoa(toolPosition)+".index", index)
+						if err != nil {
+							return data, err
+						}
+						out = patched
+					}
+					path = base + ".delta.tool_calls." + strconv.Itoa(toolPosition) + ".function.arguments"
+				}
+				if err := set(path, gjson.Get(out, path).String()+tail); err != nil {
+					return data, err
+				}
 			}
 		}
 	}
 	return out, nil
+}
+
+// chatStreamResidualChoices is the abnormal-EOF safety net for all converted
+// Chat paths. Normal finish frames have already drained these buffers.
+func chatStreamResidualChoices(restorer *anonymizer.StreamRestorer) []dto.ChatCompletionsStreamResponseChoice {
+	var choices []dto.ChatCompletionsStreamResponseChoice
+	keys := restorer.PendingKeys()
+	sort.Strings(keys)
+	for _, key := range keys {
+		idx, field, ok := chatStreamKey(key)
+		if !ok {
+			continue
+		}
+		tail := restorer.Flush(key)
+		if tail == "" {
+			continue
+		}
+		choice := dto.ChatCompletionsStreamResponseChoice{Index: idx}
+		switch field {
+		case "text":
+			choice.Text = &tail
+		case "content":
+			choice.Delta.Content = &tail
+		case "refusal":
+			choice.Delta.Refusal = &tail
+		case "reasoning_content":
+			choice.Delta.ReasoningContent = &tail
+		case "reasoning":
+			choice.Delta.Reasoning = &tail
+		default:
+			continue
+		}
+		choices = append(choices, choice)
+	}
+	keys = restorer.PendingJSONKeys()
+	sort.Strings(keys)
+	for _, key := range keys {
+		idx, field, ok := chatStreamKey(key)
+		if !ok {
+			continue
+		}
+		tail := restorer.FlushJSON(key)
+		if tail == "" {
+			continue
+		}
+		choice := dto.ChatCompletionsStreamResponseChoice{Index: idx}
+		if field == "function_call" {
+			choice.Delta.FunctionCall = &dto.FunctionResponse{Arguments: tail}
+		} else if toolIndex, ok := strings.CutPrefix(field, "tool:"); ok {
+			index, _ := strconv.Atoi(toolIndex)
+			choice.Delta.ToolCalls = []dto.ToolCallResponse{{Index: &index, Function: dto.FunctionResponse{Arguments: tail}}}
+		} else {
+			continue
+		}
+		choices = append(choices, choice)
+	}
+	return choices
+}
+
+func chatStreamKey(key string) (int, string, bool) {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return 0, "", false
+	}
+	idx, err := strconv.Atoi(parts[0])
+	return idx, parts[1], err == nil
 }

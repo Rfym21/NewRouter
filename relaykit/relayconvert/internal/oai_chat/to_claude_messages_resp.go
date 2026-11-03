@@ -242,8 +242,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 			state.FinishReason = *chosenChoice.FinishReason
 		}
 
-		if len(chosenChoice.Delta.ToolCalls) > 0 {
-			toolCalls := chosenChoice.Delta.ToolCalls
+		if toolCalls := chosenChoice.ToolCallsForConversion(openAIResponse.Id); len(toolCalls) > 0 {
 			if state.LastMessagesType != convmeta.LastMessageTypeTools {
 				stopOpenBlocksAndAdvance()
 				state.ToolCallBaseIndex = state.Index
@@ -500,5 +499,8 @@ func ResponseOpenAI2Claude(openAIResponse *dto.OpenAITextResponse, info convmeta
 }
 
 func stopReasonOpenAI2Claude(reason string) string {
+	if strings.EqualFold(reason, "function_call") {
+		reason = "tool_calls"
+	}
 	return reasonmap.OpenAIFinishReasonToClaudeStopReason(reason)
 }

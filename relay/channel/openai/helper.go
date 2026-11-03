@@ -127,7 +127,15 @@ func sendGeminiStreamResults(c *gin.Context, info *relaycommon.RelayInfo, result
 func ProcessStreamResponse(streamResponse dto.ChatCompletionsStreamResponse, responseTextBuilder *strings.Builder, toolCount *int) error {
 	for _, choice := range streamResponse.Choices {
 		responseTextBuilder.WriteString(choice.Delta.GetContentString())
+		if choice.Delta.Refusal != nil {
+			responseTextBuilder.WriteString(*choice.Delta.Refusal)
+		}
 		responseTextBuilder.WriteString(choice.Delta.GetReasoningContent())
+		if choice.Delta.FunctionCall != nil {
+			responseTextBuilder.WriteString(choice.Delta.FunctionCall.Name)
+			responseTextBuilder.WriteString(choice.Delta.FunctionCall.Arguments)
+			*toolCount = max(*toolCount, 1)
+		}
 		if choice.Delta.ToolCalls != nil {
 			if len(choice.Delta.ToolCalls) > *toolCount {
 				*toolCount = len(choice.Delta.ToolCalls)
@@ -186,7 +194,11 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 		*usage = dto.MergeUsageNonZero(*usage, lastStreamResponse.Usage)
 		if !info.ShouldIncludeUsage {
 			*shouldSendLastResp = lo.SomeBy(lastStreamResponse.Choices, func(choice dto.ChatCompletionsStreamResponseChoice) bool {
-				return choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != ""
+				return choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" ||
+					choice.Delta.Refusal != nil && *choice.Delta.Refusal != "" ||
+					choice.Text != nil && *choice.Text != "" ||
+					len(choice.Delta.ToolCalls) > 0 ||
+					choice.Delta.FunctionCall != nil && choice.Delta.FunctionCall.Arguments != ""
 			})
 		}
 	}

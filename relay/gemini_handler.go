@@ -110,6 +110,19 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	} else {
 		// 使用 ConvertGeminiRequest 转换请求格式
+		if anonymizerSession(c, info) != nil {
+			jsonData, err := common.Marshal(request)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeJsonMarshalFailed, types.ErrOptionWithSkipRetry())
+			}
+			jsonData, err = anonymizeRelayRequestJSON(c, info, types.RelayFormatGemini, jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+			if err = common.Unmarshal(jsonData, request); err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+		}
 		convertedRequest, err := adaptor.ConvertGeminiRequest(c, info, request)
 		if err != nil {
 			return newConvertRequestFailedError(c, info, err)

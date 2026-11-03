@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +43,9 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 
 	info.ObserveResponseModel(responsesResp.Model)
+	if err := anonymizer.ObserveResponse(c, body); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+	}
 	responseValue, usage, err := convertResponsesResponseForClient(c, info, &responsesResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -96,6 +98,9 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 			logger.LogError(c, common.LogText("failed to unmarshal buffered responses stream event: %s", err.Error()))
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			break
+		}
+		if err := anonymizer.ObserveResponse(c, []byte(data)); err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
 		}
 		if streamResp.Response != nil {
 			info.ObserveResponseModel(streamResp.Response.Model)
@@ -193,6 +198,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	responseId := helper.GetResponseID(c)
 	createAt := time.Now().Unix()
 	restorer := anonymizer.FromContext(c).NewStreamRestorer()
+	geminiRestorer := anonymizer.FromContext(c).NewGeminiStreamRestorer()
 	state, err := relayconvert.NewResponseStreamState(types.RelayFormatOpenAIResponses, info.RelayFormat, relayconvert.ResponseStreamOptions{
 		ID:      responseId,
 		Model:   info.UpstreamModelName,
@@ -235,17 +241,30 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return false
 	}
 
+	writeGeminiResponse := func(payload []byte) bool {
+		c.Render(-1, common.CustomEvent{Data: "data: " + relaycommon.ApplyResponseModelNameString(string(payload), info)})
+		_ = helper.FlushWriter(c)
+		return true
+	}
 	sendGeminiResponse := func(geminiResponse *dto.GeminiChatResponse) bool {
 		if geminiResponse == nil {
 			return true
 		}
-		geminiResponseStr, err := common.Marshal(geminiResponse)
+		payload, err := common.Marshal(geminiResponse)
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
-		c.Render(-1, common.CustomEvent{Data: "data: " + relaycommon.ApplyResponseModelNameString(string(geminiResponseStr), info)})
-		_ = helper.FlushWriter(c)
+		messages, err := geminiRestorer.Restore(payload)
+		if err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
+			return false
+		}
+		for _, message := range messages {
+			if !writeGeminiResponse(message) {
+				return false
+			}
+		}
 		return true
 	}
 
@@ -307,6 +326,11 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return
 		}
 
+		if err := anonymizer.ObserveResponse(c, []byte(data)); err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			stopStream(sr, streamErr)
+			return
+		}
 		var streamResp dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResp); err != nil {
 			logger.LogError(c, common.LogText("failed to unmarshal responses stream event: %s", err.Error()))
@@ -386,41 +410,23 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return usage, nil
 	}
 
-	// Emit any surrogate tail held by the cross-chunk carry buffer before the
-	// finalize/usage chunks.
+	// The raw Responses converter already owns accounting. Drain client
+	// output tails before finalize, including converted Claude JSON arguments.
 	if restorer != nil {
-		for _, key := range restorer.PendingKeys() {
+		keys := append(restorer.PendingKeys(), restorer.PendingJSONKeys()...)
+		for _, key := range keys {
 			if strings.HasPrefix(key, "claude:") {
 				if chunk := flushConvertedClaudeResidual(restorer, key); chunk != nil {
-					data, err := common.Marshal(chunk)
-					if err == nil {
+					if data, err := common.Marshal(chunk); err == nil {
 						helper.ClaudeChunkData(c, *chunk, string(data))
 					}
 				}
-				continue
 			}
-			residual := restorer.Flush(key)
-			if residual == "" {
-				continue
-			}
-			idx := 0
-			field := key
-			if parts := strings.SplitN(key, ":", 2); len(parts) == 2 {
-				idx, _ = strconv.Atoi(parts[0])
-				field = parts[1]
-			}
-			var delta dto.ChatCompletionsStreamResponseChoiceDelta
-			if field == "reasoning_content" {
-				delta.SetReasoningContent(residual)
-			} else {
-				delta.SetContentString(residual)
-			}
+		}
+		for _, choice := range chatStreamResidualChoices(restorer) {
 			chunk := dto.ChatCompletionsStreamResponse{
-				Id:      responseId,
-				Object:  "chat.completion.chunk",
-				Created: createAt,
-				Model:   info.UpstreamModelName,
-				Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: idx, Delta: delta}},
+				Id: responseId, Object: "chat.completion.chunk", Created: createAt,
+				Model: info.UpstreamModelName, Choices: []dto.ChatCompletionsStreamResponseChoice{choice},
 			}
 			if chunkData, err := common.Marshal(&chunk); err == nil {
 				if info.RelayFormat == types.RelayFormatOpenAI {
@@ -428,6 +434,15 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				} else {
 					_ = HandleStreamFormat(c, info, string(chunkData), false, false)
 				}
+			}
+		}
+	}
+	if messages, err := geminiRestorer.Flush(); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	} else {
+		for _, message := range messages {
+			if !writeGeminiResponse(message) {
+				return nil, streamErr
 			}
 		}
 	}

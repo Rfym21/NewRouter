@@ -5,9 +5,9 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"new-router/common"
 	"new-router/logger"
 	"new-router/pkg/anonymizer"
@@ -92,24 +92,39 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	// told about with response.failed.
 	var upstreamFailure *types.NewAPIError
 
-	restorer := anonymizer.FromContext(c).NewStreamRestorer()
+	restorer := anonymizer.FromContext(c).NewResponsesStreamRestorer()
 
-	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
-		data, err := common.Marshal(event.Payload)
-		if err != nil {
-			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
-			return false
-		}
-		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, relaycommon.ApplyResponseModelNameString(string(data), info)); err != nil {
-			// When the client went away the upstream already produced output,
-			// so the stream stops and settles normally instead of failing; any
-			// other write error stays a server error.
+	writeEvent := func(data []byte) bool {
+		eventType := gjson.GetBytes(data, "type").String()
+		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: eventType}, relaycommon.ApplyResponseModelNameString(string(data), info)); err != nil {
 			if c.Request.Context().Err() != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
 				return false
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			return false
+		}
+		return true
+	}
+	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
+		data, err := common.Marshal(event.Payload)
+		if err != nil {
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+			return false
+		}
+		if err := anonymizer.ObserveResponse(c, data); err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			return false
+		}
+		messages, err := restorer.Restore(data)
+		if err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
+			return false
+		}
+		for _, message := range messages {
+			if !writeEvent(message) {
+				return false
+			}
 		}
 		return true
 	}
@@ -167,7 +182,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 
 		info.ObserveResponseModel(chunk.Model)
-		deanonymizeChatStreamChunk(c, &chunk, restorer)
+		normalizeLegacyChatFunctionCalls(&chunk)
 
 		results, err := service.ConvertStreamResponseChunk(c, info, state, &chunk)
 		if err != nil {
@@ -198,41 +213,14 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return nil, streamErr
 	}
 
-	// Flush any surrogate tail held by the carry buffer as a final synthetic chunk
-	// so restored content is converted to Responses events before finalize.
-	if restorer != nil {
-		for _, key := range restorer.PendingKeys() {
-			residual := restorer.Flush(key)
-			if residual == "" {
-				continue
-			}
-			idx := 0
-			field := key
-			if parts := strings.SplitN(key, ":", 2); len(parts) == 2 {
-				idx, _ = strconv.Atoi(parts[0])
-				field = parts[1]
-			}
-			var delta dto.ChatCompletionsStreamResponseChoiceDelta
-			if field == "reasoning_content" {
-				delta.SetReasoningContent(residual)
-			} else {
-				delta.SetContentString(residual)
-			}
-			chunk := dto.ChatCompletionsStreamResponse{
-				Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: idx, Delta: delta}},
-			}
-			results, err := service.ConvertStreamResponseChunk(c, info, state, &chunk)
-			if err != nil {
-				continue
-			}
-			for _, result := range results {
-				event, ok := result.Value.(relayconvert.ChatToResponsesStreamEvent)
-				if !ok {
-					continue
-				}
-				if !sendEvent(event) {
-					return nil, streamErr
-				}
+	// Transform only at the outgoing event boundary so converter usage
+	// estimates and frozen billing data always contain upstream text.
+	if messages, err := restorer.Flush(); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	} else {
+		for _, message := range messages {
+			if !writeEvent(message) {
+				return nil, streamErr
 			}
 		}
 	}
@@ -273,6 +261,25 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 
 	return usage, nil
+}
+
+// A legacy Chat function_call is one function tool per choice. Normalize it
+// only at the Chat-to-Responses boundary; native Chat passthrough keeps the
+// original schema, while the Responses converter can retain the same call ID
+// across argument deltas and final snapshots.
+func normalizeLegacyChatFunctionCalls(chunk *dto.ChatCompletionsStreamResponse) {
+	for i := range chunk.Choices {
+		choice := &chunk.Choices[i]
+		if choice.Delta.FunctionCall == nil || len(choice.Delta.ToolCalls) != 0 {
+			continue
+		}
+		index := 0
+		id := "call_" + chunk.Id + "_legacy_" + strconv.Itoa(choice.Index)
+		choice.Delta.ToolCalls = []dto.ToolCallResponse{{
+			Index: &index, ID: id, Type: "function", Function: *choice.Delta.FunctionCall,
+		}}
+		choice.Delta.FunctionCall = nil
+	}
 }
 
 // stopStream ends a converted stream from the scanner callback. A nil

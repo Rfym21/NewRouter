@@ -7,8 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"new-router/common"
 	"new-router/constant"
 	"new-router/pkg/anonymizer"
+	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 )
 
@@ -46,4 +48,30 @@ func TestResponsesToClaudeRestoresSplitSurrogateAndClientModel(t *testing.T) {
 	require.Equal(t, mapping.Original, content.String())
 	require.Contains(t, recorder.Body.String(), `"model":"client-model"`)
 	require.NotContains(t, recorder.Body.String(), mapping.Surrogate)
+}
+
+func TestConvertedClaudeToolArgumentsRestoreAcrossEscapedFragments(t *testing.T) {
+	vault := anonymizer.NewVault()
+	mapping := vault.GetOrCreate("tools", "a\"b\n@example.test", "EMAIL")
+	restorer := anonymizer.NewSession("tools", vault).NewStreamRestorer()
+	arguments := `{"email":"` + mapping.Surrogate + `"}`
+	var output strings.Builder
+	for _, character := range arguments {
+		fragment := string(character)
+		response := &dto.ClaudeResponse{Type: "content_block_delta", Index: common.GetPointer(2), Delta: &dto.ClaudeMediaMessage{Type: "input_json_delta", PartialJson: &fragment}}
+		for _, chunk := range restoreConvertedClaudeChunk(response, restorer) {
+			if chunk.Delta != nil && chunk.Delta.PartialJson != nil {
+				output.WriteString(*chunk.Delta.PartialJson)
+			}
+		}
+	}
+	for _, chunk := range restoreConvertedClaudeChunk(&dto.ClaudeResponse{Type: "content_block_stop", Index: common.GetPointer(2)}, restorer) {
+		if chunk.Delta != nil && chunk.Delta.PartialJson != nil {
+			output.WriteString(*chunk.Delta.PartialJson)
+		}
+	}
+	var decoded map[string]string
+	require.NoError(t, common.Unmarshal([]byte(output.String()), &decoded))
+	require.Equal(t, mapping.Original, decoded["email"])
+	require.Empty(t, restorer.PendingJSONKeys())
 }

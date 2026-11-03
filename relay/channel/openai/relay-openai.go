@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
-	"strconv"
 	"strings"
 
 	"new-router/common"
@@ -137,6 +135,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 		if len(data) > 0 {
+			// Account for the upstream text before restoring client-facing
+			// values or buffering any surrogate/argument tail.
+			observeStreamChoices(info, data, seenStreamToolCalls, &streamFunctionCallNames)
+			if err := processTokenData(info, data, &responseTextBuilder, &toolCount); err != nil {
+				logger.LogError(c, common.LogText("error processing stream token data: %s", err.Error()))
+				sr.Error(err)
+			}
 			deanonData, err := deanonymizeStreamChunk(c, data, restorer)
 			if err != nil {
 				logger.LogError(c, "error deanonymizing stream chunk: "+err.Error())
@@ -150,11 +155,6 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 
 			lastStreamData = data
-			observeStreamChoices(info, data, seenStreamToolCalls, &streamFunctionCallNames)
-			if err := processTokenData(info, data, &responseTextBuilder, &toolCount); err != nil {
-				logger.LogError(c, common.LogText("error processing stream token data: %s", err.Error()))
-				sr.Error(err)
-			}
 		}
 	})
 
@@ -192,8 +192,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	// Emit any surrogate tail held back by the cross-chunk carry buffer before the
 	// final/usage chunks, so restored content precedes finish_reason.
-	flushOpenAIStreamResidual(c, info, restorer, responseId, createAt, model, systemFingerprint,
-		&responseTextBuilder)
+	flushOpenAIStreamResidual(c, info, restorer, responseId, createAt, model, systemFingerprint)
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		if shouldSendLastResp {
@@ -217,57 +216,31 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	return usage, nil
 }
 
-// flushOpenAIStreamResidual emits any surrogate tail held by the cross-chunk carry
-// buffer as trailing chat.completion.chunk(s). Each residual is counted toward the
-// local completion-token estimate (responseTextBuilder) and routed through
-// HandleStreamFormat to the client's OpenAI/Claude/Gemini format. A nil restorer
-// (anonymization disabled) is a no-op.
+// flushOpenAIStreamResidual drains abnormal-EOF tails before final/usage
+// frames. Accounting already consumed the raw upstream text, so restored tails
+// are never counted a second time.
 func flushOpenAIStreamResidual(c *gin.Context, info *relaycommon.RelayInfo, restorer *anonymizer.StreamRestorer,
-	responseId string, createAt int64, model string, systemFingerprint string,
-	responseTextBuilder *strings.Builder) {
-	keys := restorer.PendingKeys()
-	if len(keys) == 0 {
-		return
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		residual := restorer.Flush(key)
-		if residual == "" {
-			continue
+	responseId string, createAt int64, model string, systemFingerprint string) {
+	for _, choice := range chatStreamResidualChoices(restorer) {
+		object := "chat.completion.chunk"
+		if choice.Text != nil {
+			object = "text_completion"
 		}
-		parts := strings.SplitN(key, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		idx, _ := strconv.Atoi(parts[0])
-		var delta dto.ChatCompletionsStreamResponseChoiceDelta
-		switch parts[1] {
-		case "content":
-			delta.SetContentString(residual)
-		case "reasoning_content":
-			delta.SetReasoningContent(residual)
-		case "reasoning":
-			delta.Reasoning = &residual
-		default:
-			continue
-		}
-		resp := dto.ChatCompletionsStreamResponse{
-			Id:      responseId,
-			Object:  "chat.completion.chunk",
-			Created: createAt,
-			Model:   model,
-			Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: idx, Delta: delta}},
+		response := dto.ChatCompletionsStreamResponse{
+			Id: responseId, Object: object, Created: createAt, Model: model,
+			Choices: []dto.ChatCompletionsStreamResponseChoice{choice},
 		}
 		if systemFingerprint != "" {
-			resp.SetSystemFingerprint(systemFingerprint)
+			response.SetSystemFingerprint(systemFingerprint)
 		}
-		residualJSON, err := common.Marshal(resp)
+		payload, err := common.Marshal(response)
 		if err != nil {
 			continue
 		}
-		// Local token estimation counts restored residual text so billing stays accurate.
-		responseTextBuilder.WriteString(residual)
-		_ = HandleStreamFormat(c, info, string(residualJSON), false, false)
+		if choice.Text != nil {
+			payload, _ = ojson.DeleteBytes(payload, "choices.0.delta")
+		}
+		_ = HandleStreamFormat(c, info, string(payload), false, false)
 	}
 }
 
@@ -284,6 +257,15 @@ func observeStreamChoices(info *relaycommon.RelayInfo, data string, seen map[str
 				info.PerformanceBusinessRejection = true
 			}
 			info.StreamStatus.MarkCompleted()
+		}
+		if choice.Delta.FunctionCall != nil {
+			if name := strings.TrimSpace(choice.Delta.FunctionCall.Name); name != "" {
+				key := fmt.Sprintf("legacy\x00%d\x00%s", choice.Index, name)
+				if _, exists := seen[key]; !exists {
+					seen[key] = struct{}{}
+					*names = append(*names, name)
+				}
+			}
 		}
 		for i, tc := range choice.Delta.ToolCalls {
 			name := strings.TrimSpace(tc.Function.Name)

@@ -7,6 +7,7 @@ import (
 
 	"new-router/common"
 	"new-router/logger"
+	"new-router/setting/operation_setting"
 	"new-router/types"
 
 	"github.com/gin-gonic/gin"
@@ -168,6 +169,9 @@ func RecordLog(userId int, logType int, content *common.Message) {
 // RecordLogWithAdminInfo stores operator metadata under other.admin_info and
 // an optional, user-visible operation descriptor under other.op for localization.
 func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo *AuditAdminInfo, operation *AuditOperation, request ...*gin.Context) {
+	if logType == LogTypeManage && !operation_setting.IsAuditLogEnabled() {
+		return
+	}
 	if logType == LogTypeConsume && !common.LogConsumeEnabled {
 		return
 	}
@@ -212,6 +216,9 @@ func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo *
 // content 为英文兜底文本（用于导出）；action+params 供前端本地化渲染。
 // other 包含 login_method、user_agent 等结构化信息。
 func RecordLoginLog(userId, actorRole int, username string, content string, ip string, action string, params map[string]any, other AuditOther, request ...*gin.Context) {
+	if !operation_setting.IsAuditLogEnabled() {
+		return
+	}
 	other.Op = &AuditOperation{Action: action, Params: params}
 	var c *gin.Context
 	if len(request) > 0 {
@@ -227,6 +234,9 @@ func RecordLoginLog(userId, actorRole int, username string, content string, ip s
 // adminInfo 存放操作者身份（写入 Other.admin_info，普通用户查询时剥离）；
 // auditInfo 存放路由/方法/结果等中间件兜底信息（写入 Other.audit_info，普通用户查询时剥离）。
 func RecordOperationAuditLog(logUserId, actorRole int, content string, ip string, action string, params map[string]any, adminInfo *AuditAdminInfo, auditInfo *AuditRequestInfo, request ...*gin.Context) {
+	if !operation_setting.IsAuditLogEnabled() {
+		return
+	}
 	username, _ := GetUsernameById(logUserId, false)
 	other := AuditOther{
 		Op:        &AuditOperation{Action: action, Params: params},

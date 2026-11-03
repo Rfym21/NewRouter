@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"new-router/common"
+	"new-router/setting/operation_setting"
 
 	"gorm.io/gorm"
 )
@@ -47,11 +48,15 @@ func validateAuditCleanup(ctx context.Context, targetTimestamp int64) error {
 	return nil
 }
 
-// ClearAuditLogsBeforeWithAudit records the mandatory completion event in the
-// same database transaction as relational cleanup. ClickHouse mutations cannot
-// transact with inserts, so their completion is recorded with a bounded context
+// ClearAuditLogsBeforeWithAudit snapshots the audit log switch at the start of
+// cleanup. When enabled, completion is recorded in the same database transaction
+// as relational cleanup. ClickHouse mutations cannot transact with inserts, so
+// their completion is recorded with a bounded context
 // that survives client cancellation; a recording failure is returned explicitly.
 func ClearAuditLogsBeforeWithAudit(ctx context.Context, targetTimestamp int64, entry AuditLog) (int64, error) {
+	if !operation_setting.IsAuditLogEnabled() {
+		return ClearAuditLogsBefore(ctx, targetTimestamp)
+	}
 	if err := validateAuditCleanup(ctx, targetTimestamp); err != nil {
 		return 0, err
 	}

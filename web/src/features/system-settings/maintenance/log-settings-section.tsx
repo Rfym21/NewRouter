@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useId, useMemo } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
 
@@ -61,6 +61,7 @@ import { ServerLogFiles } from './server-log-files'
 
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
+  AuditLogEnabled: z.boolean(),
   AdminAuditMode: z.string(),
   LogExportFileRetentionHours: z.number().int().min(1).max(8760),
   log_setting: z.object({
@@ -74,6 +75,7 @@ type LogSettingsFormValues = z.infer<typeof logSettingsSchema>
 type LogSettingsSectionProps = {
   defaultValues: {
     LogConsumeEnabled: boolean
+    AuditLogEnabled: boolean
     AdminAuditMode: string
     LogExportFileRetentionHours: number
     'log_setting.user_export_enabled': boolean
@@ -89,6 +91,7 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
   const formDefaults = useMemo<LogSettingsFormValues>(
     () => ({
       LogConsumeEnabled: props.defaultValues.LogConsumeEnabled,
+      AuditLogEnabled: props.defaultValues.AuditLogEnabled,
       AdminAuditMode: props.defaultValues.AdminAuditMode,
       LogExportFileRetentionHours:
         props.defaultValues.LogExportFileRetentionHours,
@@ -106,11 +109,16 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
   })
 
   const isSaving = form.formState.isSubmitting || updateOption.isPending
+  const auditLogEnabled = useWatch({
+    control: form.control,
+    name: 'AuditLogEnabled',
+  })
   useResetForm(form, isSaving ? undefined : formDefaults)
 
   const onSubmit = async (values: LogSettingsFormValues) => {
     const changes = [
       ['LogConsumeEnabled', values.LogConsumeEnabled],
+      ['AuditLogEnabled', values.AuditLogEnabled],
       ['AdminAuditMode', values.AdminAuditMode],
       ['LogExportFileRetentionHours', values.LogExportFileRetentionHours],
       [
@@ -121,7 +129,12 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
     ] as const
     for (const [key, value] of changes) {
       if (value === props.defaultValues[key]) continue
-      await updateOption.mutateAsync({ key, value })
+      try {
+        await updateOption.mutateAsync({ key, value })
+      } catch {
+        // The mutation reports the error. Keep the form values for a retry.
+        return
+      }
     }
   }
 
@@ -165,57 +178,84 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                 </SettingsSwitchItem>
               )}
             />
-          </div>
+            <FormField
+              control={form.control}
+              name='AuditLogEnabled'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Record audit logs')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Record login, security, administrative operations, and access token activity. Turning this off stops new audit entries and keeps existing logs. Usage logs are controlled separately.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                      disabled={isSaving}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </SettingsSwitchItem>
+              )}
+            />
 
-          <FormField
-            control={form.control}
-            name='AdminAuditMode'
-            render={({ field }) => (
-              <SettingsSwitchItem>
-                <SettingsSwitchContent>
-                  <FormLabel>{t('Admin write-operation audit')}</FormLabel>
-                  <FormDescription>
-                    {t(
-                      'Choose whether admin/root write operations are recorded to a dedicated audit log. Billing logs are unaffected.'
-                    )}
-                  </FormDescription>
-                </SettingsSwitchContent>
-                <FormControl>
-                  <Select
-                    items={[
-                      {
-                        value: 'billing_only',
-                        label: t('Billing logs only'),
-                      },
-                      {
-                        value: 'full_audit',
-                        label: t('Full admin write audit'),
-                      },
-                    ]}
-                    value={field.value}
-                    onValueChange={(value) =>
-                      value !== null && field.onChange(value)
-                    }
-                  >
-                    <SelectTrigger className='w-[220px]'>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent alignItemWithTrigger={false}>
-                      <SelectGroup>
-                        <SelectItem value='billing_only'>
-                          {t('Billing logs only')}
-                        </SelectItem>
-                        <SelectItem value='full_audit'>
-                          {t('Full admin write audit')}
-                        </SelectItem>
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </FormControl>
-                <FormMessage />
-              </SettingsSwitchItem>
-            )}
-          />
+            <FormField
+              control={form.control}
+              name='AdminAuditMode'
+              render={({ field }) => (
+                <SettingsSwitchItem
+                  data-disabled={!auditLogEnabled || isSaving || undefined}
+                >
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Admin operation audit scope')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Choose between explicitly audited operations and all admin/root write operations.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Select
+                      items={[
+                        {
+                          value: 'billing_only',
+                          label: t('Key operations only'),
+                        },
+                        {
+                          value: 'full_audit',
+                          label: t('All admin write operations'),
+                        },
+                      ]}
+                      value={field.value}
+                      disabled={!auditLogEnabled || isSaving}
+                      onValueChange={(value) =>
+                        value !== null && field.onChange(value)
+                      }
+                    >
+                      <SelectTrigger className='w-[220px]'>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='billing_only'>
+                            {t('Key operations only')}
+                          </SelectItem>
+                          <SelectItem value='full_audit'>
+                            {t('All admin write operations')}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </FormControl>
+                  <FormMessage />
+                </SettingsSwitchItem>
+              )}
+            />
+          </div>
 
           <Separator />
 

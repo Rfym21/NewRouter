@@ -13,6 +13,7 @@ import (
 
 	"gorm.io/gorm"
 	"new-router/common"
+	"new-router/pkg/anonymizer"
 	"new-router/setting"
 	"new-router/setting/config"
 	"new-router/setting/operation_setting"
@@ -22,15 +23,16 @@ import (
 // settings API. It is rebuilt from the option map on every option write, so
 // the runtime globals updated by the same write never disagree with it.
 type RequestPolicySnapshot struct {
-	Affinity        operation_setting.ChannelAffinitySetting
-	RetryTimes      int
-	RetryCodes      []operation_setting.StatusCodeRange
-	DisableCodes    []operation_setting.StatusCodeRange
-	DisableKeywords []string
-	CheckText       bool
-	TextKeywords    []string
-	AutoDisable     bool
-	Options         map[string]string
+	Affinity           operation_setting.ChannelAffinitySetting
+	RetryTimes         int
+	RetryCodes         []operation_setting.StatusCodeRange
+	DisableCodes       []operation_setting.StatusCodeRange
+	DisableKeywords    []string
+	CheckText          bool
+	TextKeywords       []string
+	AutoDisable        bool
+	AnonymizationRules *anonymizer.RuleSet
+	Options            map[string]string
 }
 
 var requestPolicySnapshot atomic.Pointer[RequestPolicySnapshot]
@@ -60,6 +62,7 @@ func requestPolicyDefaultOptions() map[string]string {
 	defaults["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	defaults["SensitiveErrorReturnWordsEnabled"] = strconv.FormatBool(common.SensitiveErrorReturnWordsEnabled)
 	defaults["AnonymizationEnabled"] = strconv.FormatBool(setting.AnonymizationEnabled)
+	defaults[setting.AnonymizationRulesOptionKey] = "[]"
 	defaults["SensitiveWords"] = setting.SensitiveWordsToString()
 	defaults["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	defaults["ChannelDisableThreshold"] = strconv.FormatFloat(common.ChannelDisableThreshold, 'f', -1, 64)
@@ -68,6 +71,9 @@ func requestPolicyDefaultOptions() map[string]string {
 
 // IsRequestPolicyOption reports whether an option belongs to the atomic request policy update.
 func IsRequestPolicyOption(key string) bool {
+	if key == setting.AnonymizationRulesOptionKey {
+		return true
+	}
 	if strings.HasPrefix(key, "channel_affinity_setting.") {
 		return true
 	}
@@ -101,6 +107,11 @@ func BuildRequestPolicy(options map[string]string) (*RequestPolicySnapshot, erro
 	}
 	maps.Copy(raw, options)
 	snapshot := &RequestPolicySnapshot{Options: raw}
+	var rulesErr error
+	snapshot.AnonymizationRules, rulesErr = setting.ParseAnonymizationRules(raw[setting.AnonymizationRulesOptionKey])
+	if rulesErr != nil {
+		return nil, rulesErr
+	}
 	affinityFields := map[string]string{}
 	for key, value := range raw {
 		if field, ok := strings.CutPrefix(key, "channel_affinity_setting."); ok {

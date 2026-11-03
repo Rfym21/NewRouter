@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -219,6 +218,11 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			sr.Stop(streamErr)
 			return
 		}
+		if err := anonymizer.ObserveResponse(c, []byte(data)); err != nil {
+			streamErr = err
+			sr.Stop(streamErr)
+			return
+		}
 
 		if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 			info.PerformanceBusinessRejection = true
@@ -314,12 +318,19 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	restorer := anonymizer.FromContext(c).NewStreamRestorer()
 
 	usage, err := geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
+		// Restore native part slots before conversion merges them into chat choices.
+		// geminiStreamHandler has already observed the untouched upstream usage.
+		if restorer != nil {
+			restored, restoreErr := deanonymizeGeminiNativeChunk(c, data, restorer)
+			if restoreErr != nil || common.Unmarshal([]byte(restored), geminiResponse) != nil {
+				return false
+			}
+		}
 		response, isStop := streamResponseGeminiChat2OpenAI(geminiResponse)
 
 		response.Id = id
 		response.Created = createAt
 		response.Model = info.UpstreamModelName
-		deanonymizeGeminiOpenAIChunk(c, response, restorer)
 		if response.IsToolCall() {
 			finishReason = constant.FinishReasonToolCalls
 			if info.RelayFormat == types.RelayFormatClaude {
@@ -398,42 +409,26 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		return true
 	})
 
-	if err != nil {
-		return usage, err
+	// Restore tails before emitting the terminal/usage frame.
+	frames, flushErr := flushGeminiNativeRestored(c, restorer)
+	if flushErr != nil {
+		return usage, types.NewError(flushErr, types.ErrorCodeBadResponseBody)
+	}
+	for _, frame := range frames {
+		var native dto.GeminiChatResponse
+		if decodeErr := common.Unmarshal(frame, &native); decodeErr != nil {
+			continue
+		}
+		chunk, _ := streamResponseGeminiChat2OpenAI(&native)
+		chunk.Id, chunk.Created, chunk.Model = id, createAt, info.UpstreamModelName
+		if flushErr := handleStream(c, info, chunk); flushErr != nil {
+			logger.LogError(c, "gemini openai residual flush failed: "+flushErr.Error())
+			break
+		}
 	}
 
-	// Flush any surrogate tail held by the carry buffer as a trailing content chunk
-	// before the final usage/stop response.
-	if restorer != nil {
-		for _, key := range restorer.PendingKeys() {
-			residual := restorer.Flush(key)
-			if residual == "" {
-				continue
-			}
-			idx := 0
-			field := key
-			if parts := strings.SplitN(key, ":", 2); len(parts) == 2 {
-				idx, _ = strconv.Atoi(parts[0])
-				field = parts[1]
-			}
-			var delta dto.ChatCompletionsStreamResponseChoiceDelta
-			if field == "reasoning" {
-				delta.SetReasoningContent(residual)
-			} else {
-				delta.SetContentString(residual)
-			}
-			chunk := &dto.ChatCompletionsStreamResponse{
-				Id:      id,
-				Object:  "chat.completion.chunk",
-				Created: createAt,
-				Model:   info.UpstreamModelName,
-				Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: idx, Delta: delta}},
-			}
-			if flushErr := handleStream(c, info, chunk); flushErr != nil {
-				logger.LogError(c, "gemini openai residual flush failed: "+flushErr.Error())
-				break
-			}
-		}
+	if err != nil {
+		return usage, err
 	}
 
 	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)
@@ -452,6 +447,9 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	if err := anonymizer.ObserveResponse(c, responseBody); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	service.CloseResponseBodyGracefully(resp)
 	logger.LogDebug(c, "Gemini response body: %s", responseBody)

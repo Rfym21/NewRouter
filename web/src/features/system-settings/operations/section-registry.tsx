@@ -194,6 +194,7 @@ const OPERATIONS_SECTIONS = [
       <LogSettingsSection
         defaultValues={{
           LogConsumeEnabled: Boolean(settings.LogConsumeEnabled),
+          AuditLogEnabled: settings.AuditLogEnabled ?? true,
           AdminAuditMode: String(settings.AdminAuditMode || 'billing_only'),
           LogExportFileRetentionHours: settings.LogExportFileRetentionHours,
           'log_setting.user_export_enabled':

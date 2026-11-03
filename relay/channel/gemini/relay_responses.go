@@ -27,6 +27,9 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	if err := anonymizer.ObserveResponse(c, responseBody); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	}
 	logger.LogDebug(c, "Gemini responses response body: %s", responseBody)
 
 	var geminiResponse dto.GeminiChatResponse
@@ -167,6 +170,21 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		hostedBridge.Observe(geminiResponse)
 		return sendChunk(geminiResponse)
 	})
+	// Restore held parts before terminal failure/finalization, including EOF.
+	frames, flushErr := flushGeminiNativeRestored(c, restorer)
+	if flushErr != nil {
+		return usage, types.NewError(flushErr, types.ErrorCodeBadResponseBody)
+	}
+	for _, frame := range frames {
+		chunk := &dto.GeminiChatResponse{}
+		if err := common.Unmarshal(frame, chunk); err != nil {
+			continue
+		}
+		if !sendChunk(chunk) {
+			return usage, streamErr
+		}
+	}
+
 	if streamAPIError != nil {
 		if failResponsesStream(streamAPIError) && streamErr == nil {
 			return usage, nil
@@ -192,28 +210,6 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 				return usage, streamErr
 			}
 			return usage, nil
-		}
-	}
-
-	// Flush any surrogate tail held by the carry buffer as a final synthetic chunk
-	// so restored content is converted to Responses events before finalize.
-	if restorer != nil {
-		for _, key := range restorer.PendingKeys() {
-			residual := restorer.Flush(key)
-			if residual == "" {
-				continue
-			}
-			data, ok := buildGeminiNativeResidual(key, residual)
-			if !ok {
-				continue
-			}
-			chunk := &dto.GeminiChatResponse{}
-			if err := common.Unmarshal([]byte(data), chunk); err != nil {
-				continue
-			}
-			if !sendChunk(chunk) {
-				return nil, streamErr
-			}
 		}
 	}
 

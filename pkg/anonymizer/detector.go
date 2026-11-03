@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // obfKey masks embedded detector metadata (offensive-security tool names, secret
@@ -28,8 +29,11 @@ func deobf(encoded string) string {
 
 // Match is one detected sensitive value and its entity type.
 type Match struct {
-	Text       string
-	EntityType string
+	Text       string `json:"text"`
+	EntityType string `json:"entity_type"`
+	Start      int    `json:"start"` // Byte offsets in the detected UTF-8 text.
+	End        int    `json:"end"`
+	RuleName   string `json:"rule_name,omitempty"`
 }
 
 type patternSpec struct {
@@ -155,11 +159,15 @@ func mustPattern(entityType string, expr string) patternSpec {
 
 // Detect runs deterministic structured-data detection over text.
 func Detect(text string) []Match {
+	return detectStructured(text, nil)
+}
+
+func detectStructured(text string, existing []span) []Match {
 	if text == "" {
 		return nil
 	}
 	matches := make([]Match, 0)
-	covered := make([]span, 0)
+	covered := append([]span(nil), existing...)
 
 	overlaps := func(start int, end int) bool {
 		for _, current := range covered {
@@ -168,6 +176,34 @@ func Detect(text string) []Match {
 			}
 		}
 		return false
+	}
+
+	// Check explicit identifiers before generic numeric/hash rules. Labels and
+	// validation prevent token counters and arbitrary digit strings becoming PII.
+	for _, spec := range chinesePatterns {
+		for _, idx := range spec.re.FindAllStringSubmatchIndex(text, -1) {
+			start, end := idx[0], idx[1]
+			if len(idx) >= 4 && idx[2] >= 0 {
+				start, end = idx[2], idx[3]
+			}
+			if overlaps(start, end) || end <= start {
+				continue
+			}
+			value := strings.TrimSpace(text[start:end])
+			if value == "" {
+				continue
+			}
+			start += strings.Index(text[start:end], value)
+			end = start + len(value)
+			if spec.entityType == "CN_ID_CARD" && !validChineseID(value) {
+				continue
+			}
+			if spec.entityType == "PHONE_NUMBER" && hasUsageNumberContext(text[:start]) {
+				continue
+			}
+			matches = append(matches, Match{Text: value, EntityType: spec.entityType, Start: start, End: end})
+			covered = append(covered, span{start: start, end: end})
+		}
 	}
 
 	for _, spec := range detectorPatterns {
@@ -189,7 +225,9 @@ func Detect(text string) []Match {
 			if value == "" {
 				continue
 			}
-			matches = append(matches, Match{Text: value, EntityType: spec.entityType})
+			start += strings.Index(text[start:end], value)
+			end = start + len(value)
+			matches = append(matches, Match{Text: value, EntityType: spec.entityType, Start: start, End: end})
 			covered = append(covered, span{start: start, end: end})
 		}
 	}
@@ -201,12 +239,51 @@ func Detect(text string) []Match {
 		value := text[idx[0]:idx[1]]
 		digits := digitsOnly(value)
 		if len(digits) >= 13 && luhnValid(digits) {
-			matches = append(matches, Match{Text: strings.TrimSpace(value), EntityType: "CREDENTIAL"})
+			matches = append(matches, Match{Text: strings.TrimSpace(value), EntityType: "CREDENTIAL", Start: idx[0], End: idx[1]})
 			covered = append(covered, span{start: idx[0], end: idx[1]})
 		}
 	}
 
 	return matches
+}
+
+var chinesePatterns = []patternSpec{
+	mustPattern("CN_ID_CARD", `\b[1-9][0-9]{16}[0-9Xx]\b`),
+	mustPattern("PHONE_NUMBER", `\b(?:\+?86[- ]?)?(1[3-9][0-9]{9})\b`),
+	mustPattern("PERSON", `(?:真实姓名|联系人姓名|收件人|联系人|姓名)["']?\s*[:：=]\s*["']?([\p{Han}·]{2,12})(?:["']|[\s,，;；]|$)`),
+	mustPattern("ADDRESS", `(?:收货地址|家庭地址|居住地址|联系地址|通讯地址|地址)["']?\s*[:：=]\s*["']?([^\n\r"'，,；;]{6,120})`),
+}
+
+var usageNumberContext = regexp.MustCompile(`(?i)(?:tokens?|token[_ -]*(?:count|usage|limit|budget)|(?:prompt|completion|input|output|total|cache)[_ -]*tokens?|用量|额度|计数|数量)\s*["']?\s*[:：=]?\s*$`)
+
+func hasUsageNumberContext(prefix string) bool {
+	if len(prefix) > 80 {
+		prefix = prefix[len(prefix)-80:]
+	}
+	return usageNumberContext.MatchString(prefix)
+}
+
+func validChineseID(value string) bool {
+	if len(value) != 18 || value[14:17] == "000" {
+		return false
+	}
+	province := value[:2]
+	if !strings.Contains("|11|12|13|14|15|21|22|23|31|32|33|34|35|36|37|41|42|43|44|45|46|50|51|52|53|54|61|62|63|64|65|71|81|82|91|", "|"+province+"|") {
+		return false
+	}
+	birth, err := time.Parse("20060102", value[6:14])
+	if err != nil || birth.Year() < 1800 || birth.After(time.Now()) {
+		return false
+	}
+	weights := [...]int{7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2}
+	sum := 0
+	for i, weight := range weights {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+		sum += int(value[i]-'0') * weight
+	}
+	return strings.ToUpper(value[17:]) == string("10X98765432"[sum%11])
 }
 
 func shouldKeepOriginal(value string, entityType string) bool {

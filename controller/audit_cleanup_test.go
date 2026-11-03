@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -103,6 +104,47 @@ func TestAuditCleanupRequiresBoundSingleUseProof(t *testing.T) {
 			} else {
 				assert.Equal(t, http.StatusForbidden, response.Code)
 				assert.EqualValues(t, 2, older)
+			}
+		})
+	}
+}
+
+func TestAuditCleanupDisabledStillRequiresSingleUseProof(t *testing.T) {
+	for _, withProof := range []bool{false, true} {
+		t.Run(fmt.Sprintf("proof=%v", withProof), func(t *testing.T) {
+			user, identity := setupSecurityEnrollmentTest(t)
+			previousEnabled := operation_setting.IsAuditLogEnabled()
+			operation_setting.SetAuditLogEnabled(false)
+			t.Cleanup(func() { operation_setting.SetAuditLogEnabled(previousEnabled) })
+			user.Role = common.RoleRootUser
+			require.NoError(t, model.DB.Model(user).Update("role", user.Role).Error)
+			require.NoError(t, model.PublishUserAuthCache(user.Id))
+			cutoff := time.Now().Add(-time.Hour).Unix()
+			require.NoError(t, model.LOG_DB.Create(&model.AuditLog{EventId: "old-audit", CreatedAt: cutoff - 1}).Error)
+			operation := service.VerificationOperation{Scope: service.VerificationScopeAuditLogClear, Context: []byte(fmt.Sprintf(`{"target_timestamp":%d}`, cutoff))}
+			proof := ""
+			if withProof {
+				proof = issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodPassword)
+			}
+			performCleanup := func() *httptest.ResponseRecorder {
+				return securityEnrollmentRequest(http.MethodPost, "/api/log/audit/cleanup", string(operation.Context), proof, identity, func(c *gin.Context) {
+					c.Set("role", common.RoleRootUser)
+					ClearAuditLogs(c)
+				})
+			}
+			response := performCleanup()
+			var count int64
+			require.NoError(t, model.LOG_DB.Model(&model.AuditLog{}).Count(&count).Error)
+			if withProof {
+				assert.Equal(t, http.StatusOK, response.Code)
+				assert.Contains(t, response.Body.String(), `"deleted_count":1`)
+				assert.Zero(t, count, "disabled audit logging does not write cleanup completion events")
+				replay := performCleanup()
+				assert.Equal(t, http.StatusForbidden, replay.Code)
+				assert.Contains(t, replay.Body.String(), "SECURITY_PROOF_CONSUMED")
+			} else {
+				assert.Equal(t, http.StatusForbidden, response.Code)
+				assert.EqualValues(t, 1, count, "cleanup without a second verification must retain old logs")
 			}
 		})
 	}

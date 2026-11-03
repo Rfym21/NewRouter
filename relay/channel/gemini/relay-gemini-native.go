@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
-	"strconv"
-	"strings"
 
 	"new-router/common"
 	"new-router/constant"
@@ -29,6 +26,9 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	if err := anonymizer.ObserveResponse(c, responseBody); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 
 	logger.LogDebug(c, "Gemini native response body: %s", responseBody)
@@ -113,91 +113,66 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		return true
 	})
 
-	// Flush residual held tails as trailing native chunks (native has no [DONE],
-	// so this only needs to precede the function return).
-	if restorer != nil {
-		keys := restorer.PendingKeys()
-		sort.Strings(keys)
-		for _, key := range keys {
-			residual := restorer.Flush(key)
-			if residual == "" {
-				continue
-			}
-			chunk, ok := buildGeminiNativeResidual(key, residual)
-			if !ok {
-				continue
-			}
-			if err := helper.StringData(c, relaycommon.ApplyResponseModelNameString(chunk, info)); err != nil {
-				logger.LogError(c, "gemini native residual flush failed: "+err.Error())
-				break
-			}
-			info.SendResponseCount++
+	// Flush validated tails before returning, including abnormal EOF.
+	frames, flushErr := flushGeminiNativeRestored(c, restorer)
+	if flushErr != nil {
+		return usage, types.NewError(flushErr, types.ErrorCodeBadResponseBody)
+	}
+	for _, frame := range frames {
+		if err := helper.StringData(c, relaycommon.ApplyResponseModelNameString(string(frame), info)); err != nil {
+			logger.LogError(c, "gemini native residual flush failed: "+err.Error())
+			break
 		}
+		info.SendResponseCount++
 	}
 
 	return usage, apiErr
 }
 
-// deanonymizeGeminiNativeChunk restores anonymized values in one native Gemini
-// stream chunk, reassembling surrogates split across chunks via the carry buffer.
-// Only candidates[].content.parts[].text is routed through the buffer (keyed by
-// candidate index + thought flag); it edits those fields via ojson so all other
-// upstream fields (usageMetadata, modelVersion, safetyRatings, …) are preserved
-// verbatim. A nil restorer falls back to the stateless whole-chunk restore.
-func deanonymizeGeminiNativeChunk(c *gin.Context, data string, restorer *anonymizer.StreamRestorer) (string, error) {
-	if restorer == nil {
-		return deanonymizeResponseString(c, data)
-	}
-	if anonymizer.FromContext(c) == nil {
-		return data, nil
-	}
-	candidates := ojson.Get(data, "candidates")
-	if !candidates.IsArray() {
-		return deanonymizeResponseString(c, data)
-	}
-	out := data
-	for ci, cand := range candidates.Array() {
-		idx := ci
-		if v := cand.Get("index"); v.Exists() {
-			idx = int(v.Int())
-		}
-		parts := cand.Get("content.parts")
-		if !parts.IsArray() {
-			continue
-		}
-		for pi, part := range parts.Array() {
-			tv := part.Get("text")
-			if tv.Type != ojson.String {
-				continue
-			}
-			field := "content"
-			if part.Get("thought").Bool() {
-				field = "reasoning"
-			}
-			flushed := restorer.Push(strconv.Itoa(idx)+":"+field, tv.String())
-			path := "candidates." + strconv.Itoa(ci) + ".content.parts." + strconv.Itoa(pi) + ".text"
-			if patched, err := ojson.Set(out, path, flushed); err == nil {
-				out = patched
-			}
-		}
-	}
-	return out, nil
+// geminiStreamRestorerContext reuses call metadata alongside the caller's carry
+// buffer. Each new stream gets a fresh restorer, even on a reused request context.
+const geminiStreamRestorerContext = "new-router.gemini.stream-restorer"
+
+type geminiRestoreState struct {
+	stream  *anonymizer.StreamRestorer
+	restore *anonymizer.GeminiStreamRestorer
 }
 
-// buildGeminiNativeResidual builds a minimal native Gemini chunk carrying the
-// residual text for the given carry key ("<candidateIndex>:content|reasoning").
+func deanonymizeGeminiNativeChunk(c *gin.Context, data string, stream *anonymizer.StreamRestorer) (string, error) {
+	session := anonymizer.FromContext(c)
+	if session == nil || stream == nil {
+		return deanonymizeResponseString(c, data)
+	}
+	var state *geminiRestoreState
+	if value, ok := c.Get(geminiStreamRestorerContext); ok {
+		state, _ = value.(*geminiRestoreState)
+	}
+	if state == nil || state.stream != stream {
+		state = &geminiRestoreState{stream: stream, restore: anonymizer.NewGeminiStreamRestorer(session, stream)}
+		c.Set(geminiStreamRestorerContext, state)
+	}
+	frames, err := state.restore.Restore([]byte(data))
+	if err != nil {
+		return data, err
+	}
+	if len(frames) == 0 {
+		return data, nil
+	}
+	return string(frames[0]), nil
+}
+
 func buildGeminiNativeResidual(key string, residual string) (string, bool) {
-	sep := strings.IndexByte(key, ':')
-	if sep < 0 {
-		return "", false
+	return anonymizer.BuildGeminiNativeResidual(key, residual)
+}
+
+func flushGeminiNativeRestored(c *gin.Context, stream *anonymizer.StreamRestorer) ([][]byte, error) {
+	if stream == nil {
+		return nil, nil
 	}
-	idx, _ := strconv.Atoi(key[:sep])
-	field := key[sep+1:]
-	chunk := `{"candidates":[{"content":{"parts":[{}],"role":"model"},"index":0}]}`
-	chunk, _ = ojson.Set(chunk, "candidates.0.index", idx)
-	chunk, _ = ojson.Set(chunk, "candidates.0.content.parts.0.text", residual)
-	if field == "reasoning" {
-		chunk, _ = ojson.Set(chunk, "candidates.0.content.parts.0.thought", true)
+	if value, ok := c.Get(geminiStreamRestorerContext); ok {
+		if state, ok := value.(*geminiRestoreState); ok && state.stream == stream {
+			return state.restore.Flush()
+		}
 	}
-	return chunk, true
+	return anonymizer.NewGeminiStreamRestorer(anonymizer.FromContext(c), stream).Flush()
 }

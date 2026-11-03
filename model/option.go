@@ -181,9 +181,11 @@ func InitOptionMap() {
 	common.OptionMap["MjActionCheckSuccessEnabled"] = strconv.FormatBool(setting.MjActionCheckSuccessEnabled)
 	common.OptionMap["CheckSensitiveEnabled"] = strconv.FormatBool(setting.CheckSensitiveEnabled)
 	common.OptionMap["AnonymizationEnabled"] = strconv.FormatBool(setting.AnonymizationEnabled)
+	common.OptionMap[setting.AnonymizationRulesOptionKey] = "[]"
 	common.OptionMap["DemoSiteEnabled"] = strconv.FormatBool(operation_setting.DemoSiteEnabled)
 	common.OptionMap["SelfUseModeEnabled"] = strconv.FormatBool(operation_setting.SelfUseModeEnabled)
 	common.OptionMap["AdminAuditMode"] = operation_setting.AdminAuditMode
+	common.OptionMap[operation_setting.AuditLogEnabledOptionKey] = strconv.FormatBool(operation_setting.IsAuditLogEnabled())
 	common.OptionMap["ModelRequestRateLimitEnabled"] = strconv.FormatBool(setting.ModelRequestRateLimitEnabled)
 	common.OptionMap["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
@@ -265,6 +267,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == operation_setting.AuditLogEnabledOptionKey && value != "true" && value != "false" {
+		return common.NewMessage("Invalid parameters")
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
@@ -417,6 +422,11 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == operation_setting.AuditLogEnabledOptionKey {
+		if err := validateOptionValue(key, value); err != nil {
+			return err
+		}
+	}
 	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)
@@ -444,6 +454,8 @@ func updateOptionMap(key string, value string) (err error) {
 	if strings.HasSuffix(key, "Enabled") || key == "DefaultCollapseSidebar" || key == "DefaultUseAutoGroup" || key == "SMTPForceAuthLogin" || key == "SMTPInsecureSkipVerify" {
 		boolValue := value == "true"
 		switch key {
+		case operation_setting.AuditLogEnabledOptionKey:
+			operation_setting.SetAuditLogEnabled(boolValue)
 		case "PasswordRegisterEnabled":
 			common.PasswordRegisterEnabled = boolValue
 		case "PasswordLoginEnabled":

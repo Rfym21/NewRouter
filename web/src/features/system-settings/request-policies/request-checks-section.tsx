@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -45,6 +45,9 @@ import {
 } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
+import { useResetForm } from '../hooks/use-reset-form'
+import { validateAnonymizationRules } from './anonymization-rules'
+import { AnonymizationRulesEditor } from './anonymization-rules-editor'
 import { useSavePolicy } from './use-save-policy'
 
 const sensitiveSchema = z.object({
@@ -53,12 +56,21 @@ const sensitiveSchema = z.object({
   SensitiveErrorReturnWordsEnabled: z.boolean(),
   AnonymizationEnabled: z.boolean(),
   SensitiveWords: z.string().optional(),
+  anonymization_setting: z.object({
+    custom_rules: z
+      .string()
+      .refine((value) => !validateAnonymizationRules(value), {
+        message: 'Invalid anonymization rules',
+      }),
+  }),
 })
 
 type SensitiveFormValues = z.infer<typeof sensitiveSchema>
 
 type RequestChecksSectionProps = {
-  defaultValues: SensitiveFormValues
+  defaultValues: Omit<SensitiveFormValues, 'anonymization_setting'> & {
+    'anonymization_setting.custom_rules'?: string
+  }
 }
 
 export function RequestChecksSection({
@@ -66,20 +78,33 @@ export function RequestChecksSection({
 }: RequestChecksSectionProps) {
   const { t } = useTranslation()
   const updateOption = useSavePolicy()
+  const formDefaults = useMemo(() => {
+    const { 'anonymization_setting.custom_rules': rules = '[]', ...values } =
+      defaultValues
+    return { ...values, anonymization_setting: { custom_rules: rules } }
+  }, [defaultValues])
   const form = useForm<SensitiveFormValues>({
     resolver: zodResolver(sensitiveSchema),
-    defaultValues,
+    defaultValues: formDefaults,
   })
 
-  useEffect(() => {
-    form.reset(defaultValues)
-  }, [defaultValues, form])
+  const isSaving = form.formState.isSubmitting || updateOption.isPending
+  useResetForm(form, isSaving ? undefined : formDefaults)
 
   const onSubmit = async (values: SensitiveFormValues) => {
-    const updates = Object.entries(values).filter(
-      ([key, value]) =>
-        value !== defaultValues[key as keyof SensitiveFormValues]
+    const { anonymization_setting, ...plainValues } = values
+    const updates = Object.entries(plainValues).filter(
+      ([key, value]) => value !== formDefaults[key as keyof typeof plainValues]
     )
+    if (
+      anonymization_setting.custom_rules !==
+      formDefaults.anonymization_setting.custom_rules
+    ) {
+      updates.push([
+        'anonymization_setting.custom_rules',
+        anonymization_setting.custom_rules,
+      ])
+    }
 
     try {
       if (updates.length > 0) {
@@ -109,7 +134,7 @@ export function RequestChecksSection({
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
-            isSaving={form.formState.isSubmitting}
+            isSaving={isSaving}
             saveLabel='Save sensitive words'
           />
           <Alert>
@@ -241,6 +266,20 @@ export function RequestChecksSection({
                     'Each line represents one keyword. Leave blank to disable the list but keep the switch states.'
                   )}
                 </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='anonymization_setting.custom_rules'
+            render={({ field }) => (
+              <FormItem>
+                <AnonymizationRulesEditor
+                  value={field.value}
+                  onChange={field.onChange}
+                  disabled={isSaving}
+                />
                 <FormMessage />
               </FormItem>
             )}

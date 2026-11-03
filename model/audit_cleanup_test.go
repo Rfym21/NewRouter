@@ -12,10 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 	"new-router/common"
+	"new-router/setting/operation_setting"
 )
 
 func TestAuditCleanupSeparateLogDatabase(t *testing.T) {
-	for _, scenario := range []string{"success", "audit insert fails", "canceled before delete", "canceled after delete"} {
+	for _, scenario := range []string{"success", "audit disabled", "audit insert fails", "canceled before delete", "canceled after delete"} {
 		t.Run(scenario, func(t *testing.T) {
 			mainDB, err := gorm.Open(sqlite.Open(t.TempDir()+"/main.db"), &gorm.Config{})
 			require.NoError(t, err)
@@ -29,11 +30,14 @@ func TestAuditCleanupSeparateLogDatabase(t *testing.T) {
 				require.NoError(t, db.AutoMigrate(&AuditLog{}, &Log{}))
 			}
 			previousDB, previousLogDB, previousType := DB, LOG_DB, common.LogDatabaseType()
+			previousAuditEnabled := operation_setting.IsAuditLogEnabled()
+			operation_setting.SetAuditLogEnabled(scenario != "audit disabled")
 			DB, LOG_DB = mainDB, logDB
 			common.SetLogDatabaseType(common.DatabaseTypeSQLite)
 			t.Cleanup(func() {
 				DB, LOG_DB = previousDB, previousLogDB
 				common.SetLogDatabaseType(previousType)
+				operation_setting.SetAuditLogEnabled(previousAuditEnabled)
 			})
 			cutoff := time.Now().Add(-time.Hour).Unix()
 			require.NoError(t, mainDB.Create(&AuditLog{EventId: "main-db-retained", CreatedAt: cutoff - 2}).Error)
@@ -54,7 +58,13 @@ func TestAuditCleanupSeparateLogDatabase(t *testing.T) {
 				require.NoError(t, logDB.Callback().Delete().After("gorm:delete").Register("audit_cleanup_cancel", func(tx *gorm.DB) { cancel() }))
 			}
 			deleted, err := ClearAuditLogsBeforeWithAudit(ctx, cutoff, AuditLog{UserId: 1, Username: "root"})
-			if scenario == "success" {
+			if scenario == "audit disabled" {
+				require.NoError(t, err)
+				assert.EqualValues(t, 1, deleted)
+				var completionCount int64
+				require.NoError(t, logDB.Model(&AuditLog{}).Where("action = ?", "audit_log.clear").Count(&completionCount).Error)
+				assert.Zero(t, completionCount)
+			} else if scenario == "success" {
 				require.NoError(t, err)
 				assert.EqualValues(t, 1, deleted)
 				var entry AuditLog
@@ -75,7 +85,7 @@ func TestAuditCleanupSeparateLogDatabase(t *testing.T) {
 			require.NoError(t, mainDB.Model(&AuditLog{}).Count(&mainCount).Error)
 			assert.EqualValues(t, 1, usage)
 			assert.EqualValues(t, 1, mainCount)
-			if scenario == "success" {
+			if scenario == "success" || scenario == "audit disabled" {
 				assert.Zero(t, older)
 			} else {
 				assert.EqualValues(t, 1, older, "a failed completion audit or canceled request rolls back deletion")

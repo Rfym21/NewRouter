@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"new-router/common"
+	"new-router/pkg/anonymizer"
 	relaycommon "new-router/relay/common"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
@@ -29,6 +30,9 @@ func OaiResponsesCompactionHandler(c *gin.Context, info *relaycommon.RelayInfo, 
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	if err := anonymizer.ObserveResponse(c, responseBody); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	}
 	responseBody, err = deanonymizeResponseBytes(c, responseBody)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)

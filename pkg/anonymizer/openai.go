@@ -1,141 +1,161 @@
 package anonymizer
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 
 	"new-router/common"
 )
 
-// AnonymizeChatRequest anonymizes OpenAI chat-compatible request JSON.
+// Request transforms operate on protocol text slots. Identifiers, tool schemas,
+// metadata and media are retained even when their strings look like PII.
+func transformRequest(data []byte, session *Session, transform func(map[string]any)) ([]byte, error) {
+	if session == nil || len(data) == 0 {
+		return data, nil
+	}
+	var body map[string]any
+	if !json.Valid(data) {
+		return data, errors.New("invalid anonymization request JSON")
+	}
+	if err := common.UnmarshalWithNumber(data, &body); err != nil {
+		return data, err
+	}
+	if body == nil {
+		return data, errors.New("invalid anonymization request object")
+	}
+	success := false
+	session.beginRequestPreflight()
+	defer func() { session.endRequestTransform(success) }()
+	transform(body)
+	if err := session.Err(); err != nil {
+		return data, err
+	}
+	session.preflighting = false
+	transform(body)
+	if err := session.Err(); err != nil {
+		return data, err
+	}
+	encoded, err := common.Marshal(body)
+	success = err == nil
+	return encoded, err
+}
+
+// AnonymizeCompletionRequest covers the legacy /v1/completions text prompt.
+// Integer token arrays are intentionally left intact.
+func AnonymizeCompletionRequest(data []byte, session *Session) ([]byte, error) {
+	return transformRequest(data, session, func(body map[string]any) {
+		if prompt, ok := body["prompt"]; ok {
+			body["prompt"] = transformTextInput(prompt, session.AnonymizeString)
+		}
+		if suffix, ok := body["suffix"].(string); ok {
+			body["suffix"] = session.AnonymizeString(suffix)
+		}
+	})
+}
+
+// AnonymizeChatRequest includes assistant history and both generations of tool
+// calls, so a subsequent turn cannot send previously restored private text.
 func AnonymizeChatRequest(data []byte, session *Session) ([]byte, error) {
-	if session == nil || len(data) == 0 {
-		return data, nil
-	}
-	var body map[string]any
-	if err := common.UnmarshalWithNumber(data, &body); err != nil {
-		return data, err
-	}
-	messages, ok := body["messages"].([]any)
-	if !ok {
-		return data, nil
-	}
-	for _, item := range messages {
-		msg, ok := item.(map[string]any)
-		if !ok {
-			continue
+	return transformRequest(data, session, func(body map[string]any) {
+		if messages, ok := body["messages"].([]any); ok {
+			for _, item := range messages {
+				if msg, ok := item.(map[string]any); ok {
+					transformChatMessage(msg, session.AnonymizeString)
+				}
+			}
 		}
-		role, _ := msg["role"].(string)
-		switch role {
-		case "user", "tool", "system", "developer":
-			msg["content"] = anonymizeContent(msg["content"], session)
-		}
-	}
-	return common.Marshal(body)
+	})
 }
 
-// AnonymizeEmbeddingRequest anonymizes text inputs in an embeddings request.
+func transformChatMessage(msg map[string]any, transform func(string) string) {
+	if protectedTextObject(msg) {
+		return
+	}
+	if content, ok := msg["content"]; ok {
+		msg["content"] = transformContent(content, transform)
+	}
+	for _, key := range []string{"refusal", "reasoning", "reasoning_content"} {
+		if text, ok := msg[key].(string); ok {
+			msg[key] = transform(text)
+		}
+	}
+	if call, ok := msg["function_call"].(map[string]any); ok {
+		transformFunctionArguments(call, transform)
+	}
+	if calls, ok := msg["tool_calls"].([]any); ok {
+		for _, item := range calls {
+			if call, ok := item.(map[string]any); ok {
+				if function, ok := call["function"].(map[string]any); ok {
+					transformFunctionArguments(function, transform)
+				}
+			}
+		}
+	}
+}
+
+func transformFunctionArguments(call map[string]any, transform func(string) string) {
+	if arguments, ok := call["arguments"]; ok {
+		call["arguments"] = transformJSONArgument(arguments, transform)
+	}
+}
+
 func AnonymizeEmbeddingRequest(data []byte, session *Session) ([]byte, error) {
-	if session == nil || len(data) == 0 {
-		return data, nil
-	}
-	var body map[string]any
-	if err := common.UnmarshalWithNumber(data, &body); err != nil {
-		return data, err
-	}
-	if input, ok := body["input"]; ok {
-		body["input"] = anonymizeEmbeddingInput(input, session)
-	}
-	return common.Marshal(body)
+	return transformRequest(data, session, func(body map[string]any) {
+		if input, ok := body["input"]; ok {
+			body["input"] = transformTextInput(input, session.AnonymizeString)
+		}
+	})
 }
 
-// AnonymizeResponsesRequest anonymizes text-bearing fields in a Responses request.
+// AnonymizeResponsesRequest handles Responses and compact input with the same
+// contract. Compaction ciphertext is opaque and must retain its exact value.
 func AnonymizeResponsesRequest(data []byte, session *Session) ([]byte, error) {
-	if session == nil || len(data) == 0 {
-		return data, nil
-	}
-	var body map[string]any
-	if err := common.UnmarshalWithNumber(data, &body); err != nil {
-		return data, err
-	}
-	if instructions, ok := body["instructions"]; ok {
-		body["instructions"] = anonymizeResponseItem(instructions, session, false)
-	}
-	if input, ok := body["input"]; ok {
-		body["input"] = anonymizeResponseItem(input, session, true)
-	}
-	return common.Marshal(body)
+	return transformRequest(data, session, func(body map[string]any) {
+		if instructions, ok := body["instructions"]; ok {
+			body["instructions"] = transformContent(instructions, session.AnonymizeString)
+		}
+		if input, ok := body["input"]; ok {
+			body["input"] = transformResponseInput(input, session.AnonymizeString)
+		}
+	})
 }
 
-// AnonymizeTextFields anonymizes common text-bearing JSON fields in any request shape.
-func AnonymizeTextFields(data []byte, session *Session) ([]byte, error) {
-	if session == nil || len(data) == 0 {
-		return data, nil
-	}
-	var value any
-	if err := common.UnmarshalWithNumber(data, &value); err != nil {
-		return data, err
-	}
-	value = transformTextFields(value, session.AnonymizeString, requestTextKeys)
-	return common.Marshal(value)
-}
-
-// DeanonymizeChatResponse restores chat response text and tool-call arguments.
-func DeanonymizeChatResponse(data []byte, session *Session) ([]byte, error) {
-	if session == nil || len(data) == 0 {
-		return data, nil
-	}
-	var body map[string]any
-	if err := common.UnmarshalWithNumber(data, &body); err != nil {
-		return data, err
-	}
-	deanonymizeChatChoices(body, session)
-	return common.Marshal(body)
-}
-
-// DeanonymizeResponsesResponse restores Responses API text and tool arguments.
-func DeanonymizeResponsesResponse(data []byte, session *Session) ([]byte, error) {
-	if session == nil || len(data) == 0 {
-		return data, nil
-	}
-	var body map[string]any
-	if err := common.UnmarshalWithNumber(data, &body); err != nil {
-		return data, err
-	}
-	body = transformTextFields(body, session.DeanonymizeString, responseTextKeys).(map[string]any)
-	return common.Marshal(body)
-}
-
-// DeanonymizeTextFields restores common text-bearing JSON fields in any response shape.
-func DeanonymizeTextFields(data []byte, session *Session) ([]byte, error) {
-	if session == nil || len(data) == 0 {
-		return data, nil
-	}
-	var value any
-	if err := common.UnmarshalWithNumber(data, &value); err != nil {
-		return data, err
-	}
-	value = transformTextFields(value, session.DeanonymizeString, responseTextKeys)
-	return common.Marshal(value)
-}
-
-func anonymizeContent(value any, session *Session) any {
-	switch v := value.(type) {
+func transformResponseInput(value any, transform func(string) string) any {
+	switch typed := value.(type) {
 	case string:
-		return session.AnonymizeString(v)
+		return transform(typed)
 	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			part, ok := item.(map[string]any)
-			if !ok {
-				out[i] = item
-				continue
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = transformResponseInput(item, transform)
+		}
+		return out
+	case map[string]any:
+		if protectedTextObject(typed) {
+			return typed
+		}
+		out := cloneMap(typed)
+		if content, ok := out["content"]; ok {
+			out["content"] = transformContent(content, transform)
+		}
+		if text, ok := out["text"].(string); ok {
+			out["text"] = transform(text)
+		}
+		if summary, ok := out["summary"]; ok {
+			out["summary"] = transformContent(summary, transform)
+		}
+		switch out["type"] {
+		case "function_call":
+			transformFunctionArguments(out, transform)
+		case "custom_tool_call":
+			if input, ok := out["input"]; ok {
+				out["input"] = transformJSONArgument(input, transform)
 			}
-			part = cloneMap(part)
-			partType, _ := part["type"].(string)
-			if (partType == "text" || partType == "input_text" || partType == "output_text") && isString(part["text"]) {
-				part["text"] = session.AnonymizeString(part["text"].(string))
+		case "function_call_output", "custom_tool_call_output":
+			if output, ok := out["output"]; ok {
+				out["output"] = transformToolResult(output, transform)
 			}
-			out[i] = part
 		}
 		return out
 	default:
@@ -143,15 +163,138 @@ func anonymizeContent(value any, session *Session) any {
 	}
 }
 
-func anonymizeEmbeddingInput(value any, session *Session) any {
-	switch v := value.(type) {
+// AnonymizeClaudeRequest covers native Messages text, tool inputs and results.
+// Thinking blocks are preserved because their signature can arrive later.
+func AnonymizeClaudeRequest(data []byte, session *Session) ([]byte, error) {
+	return transformRequest(data, session, func(body map[string]any) {
+		if system, ok := body["system"]; ok {
+			body["system"] = transformContent(system, session.AnonymizeString)
+		}
+		if messages, ok := body["messages"].([]any); ok {
+			for _, item := range messages {
+				if message, ok := item.(map[string]any); ok {
+					if content, ok := message["content"]; ok {
+						message["content"] = transformContent(content, session.AnonymizeString)
+					}
+				}
+			}
+		}
+	})
+}
+
+// AnonymizeGeminiRequest handles text and native function payloads without
+// changing inlineData/fileData or signed thought parts.
+func AnonymizeGeminiRequest(data []byte, session *Session) ([]byte, error) {
+	return transformRequest(data, session, func(body map[string]any) {
+		if content, ok := body["content"].(map[string]any); ok {
+			transformGeminiContent(content, session.AnonymizeString)
+		}
+		if requests, ok := body["requests"].([]any); ok {
+			for _, item := range requests {
+				if request, ok := item.(map[string]any); ok {
+					if content, ok := request["content"].(map[string]any); ok {
+						transformGeminiContent(content, session.AnonymizeString)
+					}
+				}
+			}
+		}
+		for _, key := range []string{"systemInstruction", "system_instruction"} {
+			if instruction, ok := body[key].(map[string]any); ok {
+				transformGeminiContent(instruction, session.AnonymizeString)
+			}
+		}
+		if contents, ok := body["contents"].([]any); ok {
+			for _, item := range contents {
+				if content, ok := item.(map[string]any); ok {
+					transformGeminiContent(content, session.AnonymizeString)
+				}
+			}
+		}
+	})
+}
+
+func transformGeminiContent(content map[string]any, transform func(string) string) {
+	parts, ok := content["parts"].([]any)
+	if !ok {
+		return
+	}
+	for _, item := range parts {
+		part, ok := item.(map[string]any)
+		if !ok || protectedTextObject(part) {
+			continue
+		}
+		if text, ok := part["text"].(string); ok {
+			part["text"] = transform(text)
+		}
+		for _, key := range []string{"functionCall", "function_call"} {
+			if call, ok := part[key].(map[string]any); ok {
+				if args, ok := call["args"]; ok {
+					call["args"] = transformAllStrings(args, transform)
+				}
+			}
+		}
+		for _, key := range []string{"functionResponse", "function_response"} {
+			if response, ok := part[key].(map[string]any); ok {
+				if result, ok := response["response"]; ok {
+					response["response"] = transformAllStrings(result, transform)
+				}
+			}
+		}
+	}
+}
+
+func transformContent(value any, transform func(string) string) any {
+	switch typed := value.(type) {
 	case string:
-		return session.AnonymizeString(v)
+		return transform(typed)
 	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			if str, ok := item.(string); ok {
-				out[i] = session.AnonymizeString(str)
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = transformContent(item, transform)
+		}
+		return out
+	case map[string]any:
+		if protectedTextObject(typed) {
+			return typed
+		}
+		out := cloneMap(typed)
+		switch out["type"] {
+		case "text", "input_text", "output_text", "summary_text", "reasoning_text", "reasoning_summary_text":
+			if text, ok := out["text"].(string); ok {
+				out["text"] = transform(text)
+			}
+		case "refusal":
+			if text, ok := out["refusal"].(string); ok {
+				out["refusal"] = transform(text)
+			}
+		case "tool_use", "server_tool_use":
+			if input, ok := out["input"]; ok {
+				out["input"] = transformAllStrings(input, transform)
+			}
+		case "tool_result":
+			if content, ok := out["content"]; ok {
+				out["content"] = transformToolResult(content, transform)
+			}
+		case "compaction":
+			if content, ok := out["content"].(string); ok {
+				out["content"] = transform(content)
+			}
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func transformTextInput(value any, transform func(string) string) any {
+	switch typed := value.(type) {
+	case string:
+		return transform(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			if text, ok := item.(string); ok {
+				out[i] = transform(text)
 			} else {
 				out[i] = item
 			}
@@ -162,163 +305,191 @@ func anonymizeEmbeddingInput(value any, session *Session) any {
 	}
 }
 
-func anonymizeResponseItem(value any, session *Session, isToolOutput bool) any {
-	switch v := value.(type) {
+func transformToolResult(value any, transform func(string) string) any {
+	switch typed := value.(type) {
 	case string:
-		return session.AnonymizeString(v)
+		return transformJSONArgument(typed, transform)
 	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = anonymizeResponseItem(item, session, isToolOutput)
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			if block, ok := item.(map[string]any); ok && (protectedTextObject(block) || mediaObject(block)) {
+				out[i] = item
+			} else if block, ok := item.(map[string]any); ok && (block["type"] == "text" || block["type"] == "input_text" || block["type"] == "output_text") {
+				out[i] = transformContent(block, transform)
+			} else {
+				out[i] = transformAllStrings(item, transform)
+			}
 		}
 		return out
 	case map[string]any:
-		out := cloneMap(v)
-		role, _ := out["role"].(string)
-		if role == "system" || role == "developer" {
-			isToolOutput = false
-		}
-		if content, ok := out["content"]; ok {
-			out["content"] = anonymizeResponseContent(content, session, isToolOutput)
-		}
-		if out["type"] == "function_call_output" {
-			if output, ok := out["output"].(string); ok {
-				out["output"] = session.AnonymizeString(output)
-			}
-		}
-		return out
+		return transformAllStrings(typed, transform)
 	default:
 		return value
 	}
 }
 
-func anonymizeResponseContent(value any, session *Session, isToolOutput bool) any {
-	switch v := value.(type) {
-	case string:
-		return session.AnonymizeString(v)
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			part, ok := item.(map[string]any)
-			if !ok {
-				out[i] = item
-				continue
-			}
-			part = cloneMap(part)
-			if text, ok := part["text"].(string); ok {
-				part["text"] = session.AnonymizeString(text)
-			}
-			out[i] = part
-		}
-		return out
-	default:
-		return value
-	}
+// AnonymizeTextFields is a conservative fallback for compatible JSON protocols.
+func AnonymizeTextFields(data []byte, session *Session) ([]byte, error) {
+	return transformJSONText(data, session, sessionTransform(session, false), requestTextKeys, true)
 }
 
-func deanonymizeChatChoices(body map[string]any, session *Session) {
-	choices, ok := body["choices"].([]any)
-	if !ok {
-		return
+func sessionTransform(session *Session, restore bool) func(string) string {
+	if session == nil {
+		return func(text string) string { return text }
 	}
-	for _, item := range choices {
-		choice, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if message, ok := choice["message"].(map[string]any); ok {
-			deanonymizeChatMessage(message, session)
-		}
-		if delta, ok := choice["delta"].(map[string]any); ok {
-			deanonymizeChatMessage(delta, session)
-		}
+	if restore {
+		return session.DeanonymizeString
 	}
+	return session.AnonymizeString
 }
 
-func deanonymizeChatMessage(message map[string]any, session *Session) {
-	if content, ok := message["content"].(string); ok {
-		message["content"] = session.DeanonymizeString(content)
-	}
-	if reasoning, ok := message["reasoning_content"].(string); ok {
-		message["reasoning_content"] = session.DeanonymizeString(reasoning)
-	}
-	if reasoning, ok := message["reasoning"].(string); ok {
-		message["reasoning"] = session.DeanonymizeString(reasoning)
-	}
-	toolCalls, ok := message["tool_calls"].([]any)
-	if !ok {
-		return
-	}
-	for _, item := range toolCalls {
-		toolCall, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		function, ok := toolCall["function"].(map[string]any)
-		if !ok {
-			continue
-		}
-		function["arguments"] = deanonymizeJSONStringOrValue(function["arguments"], session)
-	}
+func DeanonymizeChatResponse(data []byte, session *Session) ([]byte, error) {
+	return DeanonymizeTextFields(data, session)
 }
 
-func deanonymizeJSONStringOrValue(value any, session *Session) any {
-	switch v := value.(type) {
-	case string:
-		trimmed := strings.TrimSpace(v)
-		if trimmed == "" {
-			return v
-		}
-		var parsed any
-		if err := common.UnmarshalWithNumber([]byte(trimmed), &parsed); err == nil {
-			parsed = session.DeanonymizeValue(parsed)
-			if encoded, err := common.Marshal(parsed); err == nil {
-				return string(encoded)
-			}
-		}
-		return session.DeanonymizeString(v)
-	case map[string]any, []any:
-		restored := session.DeanonymizeValue(v)
-		if encoded, err := common.Marshal(restored); err == nil {
-			return string(encoded)
-		}
-		return restored
-	default:
-		return value
+func DeanonymizeResponsesResponse(data []byte, session *Session) ([]byte, error) {
+	return DeanonymizeTextFields(data, session)
+}
+
+func DeanonymizeTextFields(data []byte, session *Session) ([]byte, error) {
+	return transformJSONText(data, session, sessionTransform(session, true), responseTextKeys, false)
+}
+
+func transformJSONText(data []byte, session *Session, transform func(string) string, keys map[string]struct{}, anonymize bool) ([]byte, error) {
+	if session == nil || len(data) == 0 {
+		return data, nil
 	}
+	if !json.Valid(data) {
+		return data, errors.New("invalid anonymization JSON")
+	}
+	var value any
+	if err := common.UnmarshalWithNumber(data, &value); err != nil {
+		return data, err
+	}
+	success := false
+	if anonymize {
+		session.beginRequestPreflight()
+		defer func() { session.endRequestTransform(success) }()
+		value = transformTextFields(value, transform, keys)
+		if err := session.Err(); err != nil {
+			return data, err
+		}
+		session.preflighting = false
+	}
+	value = transformTextFields(value, transform, keys)
+	if err := session.Err(); err != nil {
+		return data, err
+	}
+	encoded, err := common.Marshal(value)
+	success = err == nil
+	return encoded, err
 }
 
 var requestTextKeys = map[string]struct{}{
 	"content": {}, "text": {}, "input": {}, "prompt": {}, "instructions": {},
-	"output": {}, "arguments": {},
+	"output": {}, "arguments": {}, "refusal": {}, "reasoning": {}, "reasoning_content": {},
 }
-
 var responseTextKeys = map[string]struct{}{
-	"content": {}, "text": {}, "output_text": {}, "delta": {}, "arguments": {}, "output": {},
-	"reasoning": {}, "reasoning_content": {},
+	"content": {}, "text": {}, "output_text": {}, "delta": {}, "arguments": {}, "output": {}, "input": {},
+	"reasoning": {}, "reasoning_content": {}, "refusal": {},
+}
+var structuralTextKeys = map[string]struct{}{
+	"metadata": {}, "tools": {}, "functions": {}, "tool_choice": {}, "function_call": {},
+	"response_format": {}, "format": {}, "schema": {}, "parameters": {}, "input_schema": {},
+	"properties": {}, "headers": {}, "source": {}, "image_url": {}, "audio": {}, "input_audio": {},
+	"inlineData": {}, "inline_data": {}, "fileData": {}, "file_data": {},
+	"encrypted_content": {}, "signature": {}, "thoughtSignature": {}, "thought_signature": {},
 }
 
 func transformTextFields(value any, transform func(string) string, keys map[string]struct{}) any {
-	switch v := value.(type) {
+	switch typed := value.(type) {
 	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
+		out := make([]any, len(typed))
+		for i, item := range typed {
 			out[i] = transformTextFields(item, transform, keys)
 		}
 		return out
 	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			lowerKey := strings.ToLower(key)
-			if str, ok := item.(string); ok {
-				if _, shouldTransform := keys[lowerKey]; shouldTransform {
-					out[key] = transform(str)
+		if protectedTextObject(typed) || mediaObject(typed) {
+			return typed
+		}
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			lower := strings.ToLower(key)
+			if lower == "function_call" {
+				if call, ok := item.(map[string]any); ok {
+					function := cloneMap(call)
+					transformFunctionArguments(function, transform)
+					if args, ok := function["args"]; ok {
+						function["args"] = transformAllStrings(args, transform)
+					}
+					out[key] = function
+				} else {
+					out[key] = item
+				}
+				continue
+			}
+			if _, structural := structuralTextKeys[key]; structural {
+				out[key] = item
+				continue
+			}
+			// JSON arguments must be decoded before restoring quotes, backslashes or
+			// newlines; raw replacement would invalidate the nested JSON string.
+			if lower == "arguments" || (lower == "input" && (typed["type"] == "tool_use" || typed["type"] == "server_tool_use" || typed["type"] == "custom_tool_call")) {
+				out[key] = transformJSONArgument(item, transform)
+				continue
+			}
+			if lower == "output" && (typed["type"] == "function_call_output" || typed["type"] == "custom_tool_call_output") {
+				out[key] = transformToolResult(item, transform)
+				continue
+			}
+			if lower == "functioncall" {
+				if call, ok := item.(map[string]any); ok {
+					function := cloneMap(call)
+					if args, ok := function["args"]; ok {
+						function["args"] = transformAllStrings(args, transform)
+					}
+					out[key] = function
+				} else {
+					out[key] = item
+				}
+				continue
+			}
+			if lower == "functionresponse" || lower == "function_response" {
+				if result, ok := item.(map[string]any); ok {
+					function := cloneMap(result)
+					if content, ok := function["response"]; ok {
+						function["response"] = transformAllStrings(content, transform)
+					}
+					out[key] = function
+				} else {
+					out[key] = item
+				}
+				continue
+			}
+			if text, ok := item.(string); ok {
+				if _, known := keys[lower]; known {
+					out[key] = transform(text)
 					continue
 				}
 			}
-			if lowerKey == "arguments" || lowerKey == "input" {
-				out[key] = transformJSONArgument(item, transform)
+			if lower == "content" && typed["type"] == "tool_result" {
+				out[key] = transformToolResult(item, transform)
 				continue
+			}
+			if lower == "prompt" || lower == "input" {
+				if items, ok := item.([]any); ok {
+					textItems := make([]any, len(items))
+					for i, value := range items {
+						if text, ok := value.(string); ok {
+							textItems[i] = transform(text)
+						} else {
+							textItems[i] = transformTextFields(value, transform, keys)
+						}
+					}
+					out[key] = textItems
+					continue
+				}
 			}
 			out[key] = transformTextFields(item, transform, keys)
 		}
@@ -328,37 +499,65 @@ func transformTextFields(value any, transform func(string) string, keys map[stri
 	}
 }
 
+func protectedTextObject(value map[string]any) bool {
+	switch value["type"] {
+	case "thinking", "redacted_thinking", "thinking_delta", "signature_delta":
+		return true
+	case "compaction":
+		if blob, ok := value["encrypted_content"].(string); ok && blob != "" {
+			return true
+		}
+	}
+	for _, key := range []string{"signature", "thoughtSignature", "thought_signature"} {
+		if signature, ok := value[key].(string); ok && signature != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func mediaObject(value map[string]any) bool {
+	switch value["type"] {
+	case "image", "image_url", "input_image", "output_image", "input_audio", "audio", "document", "file", "input_file", "output_file", "video":
+		return true
+	}
+	return false
+}
+
 func transformJSONArgument(value any, transform func(string) string) any {
-	switch v := value.(type) {
+	switch typed := value.(type) {
 	case string:
+		trimmed := strings.TrimSpace(typed)
 		var parsed any
-		if err := common.UnmarshalWithNumber([]byte(strings.TrimSpace(v)), &parsed); err == nil {
+		if json.Valid([]byte(trimmed)) && common.UnmarshalWithNumber([]byte(trimmed), &parsed) == nil {
 			parsed = transformAllStrings(parsed, transform)
 			if encoded, err := common.Marshal(parsed); err == nil {
 				return string(encoded)
 			}
 		}
-		return transform(v)
+		return transform(typed)
 	case map[string]any, []any:
-		return transformAllStrings(v, transform)
+		return transformAllStrings(typed, transform)
 	default:
 		return value
 	}
 }
 
 func transformAllStrings(value any, transform func(string) string) any {
-	switch v := value.(type) {
+	switch typed := value.(type) {
 	case string:
-		return transform(v)
+		return transform(typed)
 	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
+		out := make([]any, len(typed))
+		for i, item := range typed {
 			out[i] = transformAllStrings(item, transform)
 		}
 		return out
 	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
+		// These are business JSON values inside a tool payload, not protocol
+		// envelopes. Keys such as metadata/signature/type carry ordinary data.
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
 			out[key] = transformAllStrings(item, transform)
 		}
 		return out
@@ -373,9 +572,4 @@ func cloneMap(in map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
-}
-
-func isString(value any) bool {
-	_, ok := value.(string)
-	return ok
 }

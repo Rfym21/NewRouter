@@ -797,7 +797,7 @@ func TestResponsesWSOutputPreservesCustomizationAndAccounting(t *testing.T) {
 			return map[string]int{dto.BuildInToolWebSearch: int(count.Int())}
 		},
 	}
-	restorer := &responsesWSOutputRestorer{info: info, session: session, restorer: session.NewStreamRestorer(), pending: make(map[string]responsesWSMessage)}
+	restorer := &responsesWSOutputRestorer{info: info, session: session, events: session.NewResponsesStreamRestorer()}
 	accumulator := service.NewResponsesUsageAccumulator(info)
 	middle := len(mapping.Surrogate) / 2
 	payloads := []string{
@@ -825,7 +825,7 @@ func TestResponsesWSOutputPreservesCustomizationAndAccounting(t *testing.T) {
 		}
 	}
 	assert.Equal(t, mapping.Original, content.String())
-	assert.Empty(t, restorer.restorer.PendingKeys())
+	assert.Empty(t, restorer.events.PendingKeys())
 	assert.Equal(t, "upstream-reported", info.ResponseModel.ReturnedModel)
 	usage := accumulator.Finish()
 	assert.Equal(t, 7, usage.PromptTokens)
@@ -842,7 +842,7 @@ func TestResponsesWSOutputFlushesIncompleteTail(t *testing.T) {
 			vault := anonymizer.NewVault()
 			mapping := vault.GetOrCreate("websocket", "alice@company.example", "EMAIL")
 			session := anonymizer.NewSession("websocket", vault)
-			restorer := &responsesWSOutputRestorer{session: session, restorer: session.NewStreamRestorer(), pending: make(map[string]responsesWSMessage)}
+			restorer := &responsesWSOutputRestorer{session: session, events: session.NewResponsesStreamRestorer()}
 			fragment := mapping.Surrogate[:len(mapping.Surrogate)/2]
 			payload := fmt.Sprintf(`{"type":"response.output_text.delta","stream_id":"stream-1","item_id":"item-1","sequence_number":4,"delta":%q}`, fragment)
 			var event dto.ResponsesStreamResponse

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"net/netip"
 	"regexp"
 	"strings"
 )
@@ -31,9 +32,17 @@ func GenerateSurrogate(original string, entityType string) string {
 	case "URL":
 		return "http://" + fakeIP() + "/path"
 	case "ORGANIZATION":
-		return randomChoice([]string{"Northwind Labs", "Apex Systems", "Vertex Group", "Praxis Security", "Helios Digital"})
+		return "[ORG_" + randomUpperNum(12) + "]"
 	case "PERSON":
-		return randomChoice([]string{"Alex Morgan", "Jordan Taylor", "Casey Brooks", "Riley Parker", "Morgan Ellis"})
+		return "[PERSON_" + randomUpperNum(12) + "]"
+	case "PHONE_NUMBER":
+		return "[PHONE_" + randomUpperNum(12) + "]"
+	case "CN_ID_CARD":
+		return "[CNID_" + randomUpperNum(12) + "]"
+	case "ADDRESS", "LOCATION":
+		return "[ADDRESS_" + randomUpperNum(12) + "]"
+	case "CUSTOM":
+		return "[CUSTOM_" + randomUpperNum(12) + "]"
 	case "CREDENTIAL":
 		return "[CRED_" + randomUpperNum(8) + "]"
 	case "HASH":
@@ -56,13 +65,14 @@ func GenerateSurrogate(original string, entityType string) string {
 }
 
 func fakeIP() string {
-	net := randomChoice([]string{"10.200.99", "10.201.88", "172.28.199"})
-	return fmt.Sprintf("%s.%d", net, randomInt(1, 254))
+	// The full private 10/8 space is large enough for bounded request vaults,
+	// unlike a few /24 pools which could overlap all true addresses in a batch.
+	return fmt.Sprintf("10.%d.%d.%d", randomInt(0, 255), randomInt(0, 255), randomInt(1, 254))
 }
 
 func fakeCIDR() string {
-	net := randomChoice([]string{"10.200.99", "10.201.88", "172.28.199"})
-	return fmt.Sprintf("%s.0/%d", net, randomInt(16, 30))
+	address := netip.AddrFrom4([4]byte{10, byte(randomInt(0, 255)), byte(randomInt(0, 255)), byte(randomInt(0, 255))})
+	return netip.PrefixFrom(address, randomInt(16, 30)).Masked().String()
 }
 
 func fakeToken(original string) string {

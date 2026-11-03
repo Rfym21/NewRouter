@@ -49,6 +49,7 @@ const defaultOperationsSettings: OperationsSettings = {
   WorkerValidKey: '',
   WorkerAllowHttpImageRequestEnabled: false,
   LogConsumeEnabled: false,
+  AuditLogEnabled: true,
   AdminAuditMode: 'billing_only',
   LogExportFileRetentionHours: 24,
   'log_setting.user_export_enabled': true,

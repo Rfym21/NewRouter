@@ -129,7 +129,7 @@ func StreamResponseOpenAI2Gemini(openAIResponse *dto.ChatCompletionsStreamRespon
 	hasContent := false
 	hasFinishReason := false
 	for _, choice := range openAIResponse.Choices {
-		if len(choice.Delta.GetContentString()) > 0 || (choice.Delta.ToolCalls != nil && len(choice.Delta.ToolCalls) > 0) {
+		if len(choice.Delta.GetContentString()) > 0 || len(choice.ToolCallsForConversion(openAIResponse.Id)) > 0 {
 			hasContent = true
 		}
 		if choice.FinishReason != nil {
@@ -197,8 +197,8 @@ func StreamResponseOpenAI2Gemini(openAIResponse *dto.ChatCompletionsStreamRespon
 		}
 
 		// 处理工具调用
-		if choice.Delta.ToolCalls != nil {
-			for _, toolCall := range choice.Delta.ToolCalls {
+		if toolCalls := choice.ToolCallsForConversion(openAIResponse.Id); len(toolCalls) > 0 {
+			for _, toolCall := range toolCalls {
 				part := dto.GeminiPart{
 					FunctionCall: &dto.FunctionCall{
 						ID:           toolCall.ID,
@@ -260,9 +260,10 @@ func (s *ChatToGeminiStreamState) ConvertChunk(openAIResponse *dto.ChatCompletio
 
 	candidates := make([]dto.GeminiChatCandidate, 0, len(openAIResponse.Choices))
 	for _, choice := range openAIResponse.Choices {
+		toolCalls := choice.ToolCallsForConversion(openAIResponse.Id)
 		s.seenChoices[choice.Index] = true
 		hasText := choice.Delta.GetContentString() != ""
-		hasToolDelta := len(choice.Delta.ToolCalls) > 0
+		hasToolDelta := len(toolCalls) > 0
 		hasFinish := choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != ""
 		if s.finishedChoices[choice.Index] {
 			if hasText || hasToolDelta {
@@ -271,7 +272,7 @@ func (s *ChatToGeminiStreamState) ConvertChunk(openAIResponse *dto.ChatCompletio
 			continue
 		}
 
-		for position, toolCall := range choice.Delta.ToolCalls {
+		for position, toolCall := range toolCalls {
 			if toolCall.Index == nil {
 				toolCall.SetIndex(position)
 			}

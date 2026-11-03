@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
-	"strconv"
-	"strings"
 
 	"new-router/common"
 	"new-router/constant"
@@ -40,6 +37,9 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 
 	info.ObserveResponseModel(responsesResponse.Model)
+	if err := anonymizer.ObserveResponse(c, responseBody); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+	}
 	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
 
 	// 写入新的 response body
@@ -83,84 +83,64 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	defer service.CloseResponseBodyGracefully(resp)
 
 	accumulator := service.NewResponsesUsageAccumulator(info)
-	restorer := anonymizer.FromContext(c).NewStreamRestorer()
+	restorer := anonymizer.FromContext(c).NewResponsesStreamRestorer()
+	var streamErr *types.NewAPIError
+	sendRestored := func(messages [][]byte) error {
+		for _, message := range messages {
+			var event dto.ResponsesStreamResponse
+			if err := common.Unmarshal(message, &event); err != nil {
+				return err
+			}
+			if err := sendResponsesStreamData(c, info, event, string(message)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		var streamResponse dto.ResponsesStreamResponse
-		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
+		var event dto.ResponsesStreamResponse
+		if err := common.UnmarshalJsonStr(data, &event); err != nil {
 			logger.LogError(c, common.LogText("failed to unmarshal stream response: %s", err.Error()))
 			sr.Error(err)
 			return
 		}
-		// Account for upstream output before anonymization restores client text.
-		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
-		if streamResponse.Response != nil {
-			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
+		// Upstream usage and model declarations are observed exactly once,
+		// before restoring text or synthesizing residual events.
+		accumulator.Observe(&event, common.StringToByteSlice(data))
+		if err := anonymizer.ObserveResponse(c, []byte(data)); err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			sr.Stop(streamErr)
+			return
 		}
-
-		// Cross-chunk restore for incremental text deltas: reassemble surrogates
-		// split across SSE chunks before emitting. Other event types fall through
-		// to the stateless whole-chunk restore below.
-		if restorer != nil {
-			switch streamResponse.Type {
-			case "response.output_text.delta", "response.reasoning_summary_text.delta":
-				rawDelta := streamResponse.Delta
-				flush := restorer.Push(responsesStreamKey(&streamResponse), rawDelta)
-				if flush != "" {
-					streamResponse.Delta = flush
-					patched, setErr := ojson.Set(data, "delta", flush)
-					if setErr != nil {
-						patched = data
-					}
-					if err := sendResponsesStreamData(c, info, streamResponse, patched); err != nil {
-						sr.Stop(err)
-					}
-				}
-				return
-			case "response.output_text.done", "response.reasoning_summary_text.done":
-				// Emit the held tail (in order) before the terminal-per-part event,
-				// whose `text` carries the full value and is restored below.
-				if err := emitResponsesResidual(c, info, restorer, responsesStreamKey(&streamResponse)); err != nil {
-					sr.Stop(err)
-					return
-				}
-			}
+		if event.Response != nil {
+			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", event.Response.CreatedAt))
 		}
-
-		if deanonData, err := deanonymizeResponseString(c, data); err == nil && deanonData != data {
-			if err := common.UnmarshalJsonStr(deanonData, &streamResponse); err == nil {
-				data = deanonData
-			}
+		messages, err := restorer.Restore([]byte(data))
+		if err == nil {
+			err = sendRestored(messages)
 		}
-		completed := (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done") &&
-			streamResponse.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted)
-		if completed && restorer != nil {
-			if err := flushResponsesResiduals(c, info, restorer); err != nil {
-				sr.Stop(err)
-				return
-			}
-		}
-		if err := sendResponsesStreamData(c, info, streamResponse, data); err != nil {
+		if err != nil {
 			sr.Stop(err)
 			return
 		}
+		completed := (event.Type == "response.completed" || event.Type == "response.done") &&
+			event.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted)
 		if completed {
 			sr.Done()
 		}
 	})
-
-	// Safety net: flush any residual held tail when the stream ended without a
-	// matching *.done event (truncated/abnormal end). On a normal stream the
-	// per-part flush above already emptied the carry.
-	if restorer != nil {
-		if err := flushResponsesResiduals(c, info, restorer); err != nil {
-			info.StreamStatus.RecordError(err.Error())
-			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonHandlerStop, err)
-		}
+	// Drain only held tails on abnormal EOF. Accounting remains upstream-only.
+	messages, err := restorer.Flush()
+	if err == nil {
+		err = sendRestored(messages)
 	}
-
+	if err != nil {
+		info.StreamStatus.RecordError(err.Error())
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonHandlerStop, err)
+	}
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
 	info.StreamStatus.RequireTerminal()
-	return accumulator.Finish(), nil
+	return accumulator.Finish(), streamErr
 }
 
 func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte, path string, createdAt dto.IntValue) []byte {
@@ -175,65 +155,4 @@ func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte
 		return payload
 	}
 	return patched
-}
-
-// responsesStreamKey derives a stable carry-buffer key for an incremental text
-// event, partitioning by text family (output vs reasoning summary), item id, and
-// output/content(summary) indices so concurrent output parts never cross-restore.
-func responsesStreamKey(r *dto.ResponsesStreamResponse) string {
-	family := "output_text"
-	sub := r.ContentIndex
-	if strings.HasPrefix(r.Type, "response.reasoning_summary_text") {
-		family = "reasoning_summary"
-		sub = r.SummaryIndex
-	}
-	out := 0
-	if r.OutputIndex != nil {
-		out = *r.OutputIndex
-	}
-	s := 0
-	if sub != nil {
-		s = *sub
-	}
-	return family + "\x00" + r.ItemID + "\x00" + strconv.Itoa(out) + "\x00" + strconv.Itoa(s)
-}
-
-// emitResponsesResidual flushes the held tail for key and, if non-empty, emits it
-// as a synthetic *.delta event carrying the same item_id/index so clients splice
-// it into the correct stream.
-func emitResponsesResidual(c *gin.Context, info *relaycommon.RelayInfo, restorer *anonymizer.StreamRestorer, key string) error {
-	residual := restorer.Flush(key)
-	if residual == "" {
-		return nil
-	}
-	parts := strings.Split(key, "\x00")
-	if len(parts) != 4 {
-		return nil
-	}
-	out, _ := strconv.Atoi(parts[2])
-	sub, _ := strconv.Atoi(parts[3])
-	ev := dto.ResponsesStreamResponse{Delta: residual, ItemID: parts[1], OutputIndex: &out}
-	if parts[0] == "reasoning_summary" {
-		ev.Type = "response.reasoning_summary_text.delta"
-		ev.SummaryIndex = &sub
-	} else {
-		ev.Type = "response.output_text.delta"
-		ev.ContentIndex = &sub
-	}
-	body, err := common.Marshal(ev)
-	if err != nil {
-		return err
-	}
-	return sendResponsesStreamData(c, info, ev, string(body))
-}
-
-func flushResponsesResiduals(c *gin.Context, info *relaycommon.RelayInfo, restorer *anonymizer.StreamRestorer) error {
-	keys := restorer.PendingKeys()
-	sort.Strings(keys)
-	for _, key := range keys {
-		if err := emitResponsesResidual(c, info, restorer, key); err != nil {
-			return err
-		}
-	}
-	return nil
 }

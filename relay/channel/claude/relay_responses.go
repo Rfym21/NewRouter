@@ -71,6 +71,16 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		return sendResponsesEvent(event.Type, event.Payload)
 	}
 	failResponsesStream := func(err error) bool {
+		// Release valid held fragments before the terminal failure closes items.
+		for _, chunk := range flushConvertedClaudeChunks(restorer, "") {
+			if results, conversionErr := service.ConvertStreamResponseChunk(c, info, state, chunk); conversionErr == nil {
+				for _, result := range results {
+					if !sendResult(result) {
+						return true
+					}
+				}
+			}
+		}
 		failureResults, handled := state.FailResponsesStream("server_error", err.Error(), "")
 		if !handled {
 			return false
@@ -85,6 +95,11 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if err := anonymizer.ObserveResponse(c, []byte(data)); err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
+			sr.Stop(streamErr)
+			return
+		}
 		var claudeResponse dto.ClaudeResponse
 		if err := common.UnmarshalJsonStr(data, &claudeResponse); err != nil {
 			logger.LogError(c, common.LogText("failed to unmarshal Claude stream event: %s", err.Error()))
@@ -108,7 +123,12 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			return
 		}
 
-		for _, prepared := range prepareConvertedClaudeChunk(c, &claudeResponse, restorer) {
+		// Channel usage rewrites occur first; text restoration uses a client copy.
+		preparedChunks := prepareConvertedClaudeChunk(c, &claudeResponse, restorer)
+		// Usage fallback must describe upstream output, before placeholder restoration.
+		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
+		countClaudeStreamBillableTools(info, &claudeResponse)
+		for _, prepared := range preparedChunks {
 			claudeResponse := *prepared
 			if claudeResponse.StopReason != "" {
 				maybeMarkClaudeRefusal(c, info, claudeResponse.StopReason)
@@ -123,8 +143,6 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 				info.ObserveResponseModel(claudeResponse.Message.Model)
 				info.UpstreamModelName = claudeResponse.Message.Model
 			}
-			FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
-			countClaudeStreamBillableTools(info, &claudeResponse)
 			hostedEvents, consumed, err := hostedBridge.Convert(&claudeResponse, state)
 			if err != nil {
 				if failResponsesStream(err) {

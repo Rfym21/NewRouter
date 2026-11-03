@@ -43,7 +43,8 @@ func ClearAuditLogs(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// The model persists a completion event even when operation auditing is off.
+	// Completion is handled by the model according to the audit log master
+	// switch, independently of the selected admin write-operation audit mode.
 	markAuditLogged(c)
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"deleted_count": deleted}})
 }

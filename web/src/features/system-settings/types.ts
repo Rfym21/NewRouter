@@ -373,6 +373,7 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
+  AuditLogEnabled: boolean
   AdminAuditMode: string
   LogExportFileRetentionHours: number
   'log_setting.user_export_enabled': boolean

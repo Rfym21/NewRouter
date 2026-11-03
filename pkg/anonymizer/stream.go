@@ -13,10 +13,11 @@ import "strings"
 // a single goroutine. The relay stream handlers already run their per-chunk
 // callback serially (see helper.StreamScannerHandler), so this holds.
 type StreamRestorer struct {
-	session    *Session
-	surrogates []string // snapshot of this engagement's surrogates
-	maxLen     int      // longest surrogate length
-	carry      map[string]string
+	session     *Session
+	surrogates  []string // snapshot of this engagement's surrogates
+	maxLen      int      // longest surrogate length
+	carry       map[string]string
+	jsonStreams map[string]*jsonStreamState
 }
 
 // NewStreamRestorer snapshots the session's current surrogate set for streaming

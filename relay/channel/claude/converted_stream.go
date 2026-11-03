@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -29,6 +30,13 @@ func prepareConvertedClaudeChunk(c *gin.Context, response *dto.ClaudeResponse, r
 	if restorer == nil {
 		return []*dto.ClaudeResponse{response}
 	}
+	// Restore a client copy; usage estimation must retain upstream text and JSON.
+	clientResponse := *response
+	response = &clientResponse
+	if response.Delta != nil {
+		delta := *response.Delta
+		response.Delta = &delta
+	}
 	index := 0
 	if response.Index != nil {
 		index = *response.Index
@@ -36,15 +44,17 @@ func prepareConvertedClaudeChunk(c *gin.Context, response *dto.ClaudeResponse, r
 	var chunks []*dto.ClaudeResponse
 	if response.Type == "content_block_stop" {
 		chunks = flushConvertedClaudeChunks(restorer, strconv.Itoa(index)+":")
+	} else if response.Type == "message_stop" || response.Type == "message_delta" {
+		chunks = flushConvertedClaudeChunks(restorer, "")
 	}
 	if response.Type == "content_block_delta" && response.Delta != nil {
 		if response.Delta.Type == "text_delta" && response.Delta.Text != nil {
 			text := restorer.Push(strconv.Itoa(index)+":text", *response.Delta.Text)
 			response.Delta.Text = &text
 		}
-		if response.Delta.Type == "thinking_delta" && response.Delta.Thinking != nil {
-			text := restorer.Push(strconv.Itoa(index)+":thinking", *response.Delta.Thinking)
-			response.Delta.Thinking = &text
+		if response.Delta.Type == "input_json_delta" && response.Delta.PartialJson != nil {
+			text := restorer.PushJSON(strconv.Itoa(index)+":arguments", *response.Delta.PartialJson)
+			response.Delta.PartialJson = &text
 		}
 	}
 	if data, err := common.Marshal(response); err == nil {
@@ -60,12 +70,10 @@ func flushConvertedClaudeChunks(restorer *anonymizer.StreamRestorer, prefix stri
 		return nil
 	}
 	var chunks []*dto.ClaudeResponse
-	for _, key := range restorer.PendingKeys() {
+	keys := append(restorer.PendingKeys(), restorer.PendingJSONKeys()...)
+	sort.Strings(keys)
+	for _, key := range keys {
 		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		text := restorer.Flush(key)
-		if text == "" {
 			continue
 		}
 		indexText, field, ok := strings.Cut(key, ":")
@@ -76,9 +84,18 @@ func flushConvertedClaudeChunks(restorer *anonymizer.StreamRestorer, prefix stri
 		if err != nil {
 			continue
 		}
+		text := ""
+		if field == "arguments" {
+			text = restorer.FlushJSON(key)
+		} else {
+			text = restorer.Flush(key)
+		}
+		if text == "" {
+			continue
+		}
 		delta := &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}
-		if field == "thinking" {
-			delta = &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &text}
+		if field == "arguments" {
+			delta = &dto.ClaudeMediaMessage{Type: "input_json_delta", PartialJson: &text}
 		}
 		chunks = append(chunks, &dto.ClaudeResponse{Type: "content_block_delta", Index: &index, Delta: delta})
 	}

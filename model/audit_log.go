@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"new-router/common"
 	"new-router/logger"
+	"new-router/setting/operation_setting"
 )
 
 const (
@@ -72,6 +73,9 @@ func AccessTokenFingerprint(token string) string {
 // RecordAuditLog captures safe request metadata only; raw URLs, query strings,
 // credentials and response/request bodies must never enter this table.
 func RecordAuditLog(c *gin.Context, entry AuditLog) {
+	if !operation_setting.IsAuditLogEnabled() {
+		return
+	}
 	ctx := context.Background()
 	if c != nil && c.Request != nil {
 		ctx = c.Request.Context()

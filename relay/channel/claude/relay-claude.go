@@ -140,6 +140,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		common.SysLog(common.LogText("error unmarshalling stream response: %s", err.Error()))
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
+	if err := anonymizer.ObserveResponse(c, []byte(data)); err != nil {
+		return types.NewError(err, types.ErrorCodeBadResponseBody)
+	}
 	restorer := claudeStreamRestorer(c)
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
@@ -194,8 +197,7 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		if cache1hAs5m {
 			data = RewriteClaudeStreamUsage1hAs5mString(data)
 		}
-		// Cross-chunk restore: route incremental text/thinking through the carry
-		// buffer so surrogates split across content_block_delta events are reassembled.
+		// Keep signed thinking untouched, and restore each text/tool stream separately.
 		if restorer != nil && claudeResponse.Type == "content_block_delta" && claudeResponse.Delta != nil {
 			blockIdx := 0
 			if claudeResponse.Index != nil {
@@ -209,10 +211,10 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 						data = patched
 					}
 				}
-			case "thinking_delta":
-				if claudeResponse.Delta.Thinking != nil {
-					flushed := restorer.Push(strconv.Itoa(blockIdx)+":thinking", *claudeResponse.Delta.Thinking)
-					if patched, e := sjson.Set(data, "delta.thinking", flushed); e == nil {
+			case "input_json_delta":
+				if claudeResponse.Delta.PartialJson != nil {
+					flushed := restorer.PushJSON(strconv.Itoa(blockIdx)+":arguments", *claudeResponse.Delta.PartialJson)
+					if patched, e := sjson.Set(data, "delta.partial_json", flushed); e == nil {
 						data = patched
 					}
 				}
@@ -226,12 +228,34 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			}
 			emitClaudeNativeResidual(c, restorer, blockIdx)
 		}
+		if restorer != nil && (claudeResponse.Type == "message_delta" || claudeResponse.Type == "message_stop") {
+			for _, chunk := range flushConvertedClaudeChunks(restorer, "") {
+				_ = helper.ClaudeData(c, *chunk)
+			}
+		}
 		if deanon, e := deanonymizeResponseString(c, data); e == nil {
 			data = deanon
 		}
 		data = relaycommon.ApplyResponseModelNameString(data, info)
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
+		// Observe original upstream output before any client-facing restoration.
+		if !FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo) && claudeResponse.Type != "content_block_stop" {
+			return nil
+		}
+		if restorer != nil && (claudeResponse.Type == "message_delta" || claudeResponse.Type == "message_stop") {
+			keys := append(restorer.PendingKeys(), restorer.PendingJSONKeys()...)
+			sort.Strings(keys)
+			seen := make(map[int]bool)
+			for _, key := range keys {
+				indexText, _, ok := strings.Cut(key, ":")
+				index, err := strconv.Atoi(indexText)
+				if ok && err == nil && !seen[index] {
+					seen[index] = true
+					emitClaudeOpenAIResidual(c, info, restorer, index, claudeInfo)
+				}
+			}
+		}
 		// content_block_stop produces no OpenAI chunk, so flush the block's held
 		// tail here before the converter drops it.
 		if restorer != nil && claudeResponse.Type == "content_block_stop" {
@@ -250,8 +274,10 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 
-		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
-			return nil
+		if response != nil {
+			response.Id = claudeInfo.ResponseId
+			response.Created = claudeInfo.Created
+			response.Model = claudeInfo.Model
 		}
 
 		if restorer != nil && response != nil {
@@ -265,9 +291,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 					flushed := restorer.Push(strconv.Itoa(blockIdx)+":text", *ch.Delta.Content)
 					ch.Delta.Content = &flushed
 				}
-				if ch.Delta.ReasoningContent != nil {
-					flushed := restorer.Push(strconv.Itoa(blockIdx)+":thinking", *ch.Delta.ReasoningContent)
-					ch.Delta.ReasoningContent = &flushed
+				for j := range ch.Delta.ToolCalls {
+					tool := &ch.Delta.ToolCalls[j]
+					tool.Function.Arguments = restorer.PushJSON(strconv.Itoa(blockIdx)+":arguments", tool.Function.Arguments)
 				}
 			}
 		}
@@ -295,9 +321,7 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			}
 			results = append(results, converted...)
 		}
-		if !FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo) {
-			return nil
-		}
+		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
 		countClaudeStreamBillableTools(info, &claudeResponse)
 		if sendErr := sendGeminiStreamResults(c, info, results); sendErr != nil {
 			return sendErr
@@ -310,50 +334,26 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 // block as a synthetic content_block_delta, keeping restored text before the
 // block's content_block_stop.
 func emitClaudeNativeResidual(c *gin.Context, restorer *anonymizer.StreamRestorer, blockIdx int) {
-	for _, field := range []string{"text", "thinking"} {
-		residual := restorer.Flush(strconv.Itoa(blockIdx) + ":" + field)
-		if residual == "" {
-			continue
-		}
-		delta := &dto.ClaudeMediaMessage{Type: "text_delta"}
-		if field == "thinking" {
-			delta.Type = "thinking_delta"
-			delta.Thinking = &residual
-		} else {
-			delta.SetText(residual)
-		}
-		resp := dto.ClaudeResponse{Type: "content_block_delta", Delta: delta}
-		resp.SetIndex(blockIdx)
-		_ = helper.ClaudeData(c, resp)
+	for _, chunk := range flushConvertedClaudeChunks(restorer, strconv.Itoa(blockIdx)+":") {
+		_ = helper.ClaudeData(c, *chunk)
 	}
 }
 
 // emitClaudeOpenAIResidual flushes and emits any held tail for a Claude content
 // block as a trailing chat.completion.chunk (OpenAI output format).
 func emitClaudeOpenAIResidual(c *gin.Context, info *relaycommon.RelayInfo, restorer *anonymizer.StreamRestorer, blockIdx int, claudeInfo *ClaudeResponseInfo) {
-	for _, field := range []string{"text", "thinking"} {
-		residual := restorer.Flush(strconv.Itoa(blockIdx) + ":" + field)
-		if residual == "" {
+	state, err := claudeToChatStreamState(info)
+	if err != nil {
+		return
+	}
+	for _, chunk := range flushConvertedClaudeChunks(restorer, strconv.Itoa(blockIdx)+":") {
+		response, err := state.ConvertChunk(chunk)
+		if err != nil || response == nil {
 			continue
 		}
-		var delta dto.ChatCompletionsStreamResponseChoiceDelta
-		if field == "thinking" {
-			delta.ReasoningContent = &residual
-		} else {
-			delta.Content = &residual
-		}
-		resp := &dto.ChatCompletionsStreamResponse{
-			Id:      claudeInfo.ResponseId,
-			Object:  "chat.completion.chunk",
-			Created: claudeInfo.Created,
-			Model:   info.ClientResponseModelName(info.UpstreamModelName),
-			Choices: []dto.ChatCompletionsStreamResponseChoice{{Index: 0, Delta: delta}},
-		}
-		data, err := common.Marshal(resp)
-		if err != nil {
-			continue
-		}
-		_ = helper.StringData(c, string(data))
+		response.Id, response.Created = claudeInfo.ResponseId, claudeInfo.Created
+		response.Model = info.ClientResponseModelName(info.UpstreamModelName)
+		_ = helper.ObjectData(c, response)
 	}
 }
 
@@ -461,11 +461,11 @@ func recordClaudeServerToolUse(info *relaycommon.RelayInfo, serverToolUse *dto.C
 	}
 }
 
-func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+func flushClaudeRestoredOutput(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
 	// Safety net: flush any residual carry left by a truncated stream (no
 	// content_block_stop). Runs before the final usage chunk / [DONE].
 	if restorer := claudeStreamRestorer(c); restorer != nil {
-		keys := restorer.PendingKeys()
+		keys := append(restorer.PendingKeys(), restorer.PendingJSONKeys()...)
 		sort.Strings(keys)
 		seen := make(map[int]struct{}, len(keys))
 		for _, key := range keys {
@@ -495,6 +495,10 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 			}
 		}
 	}
+}
+
+func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+	flushClaudeRestoredOutput(c, info, claudeInfo)
 	// Claude input_tokens excludes cache reads and writes, so a fully cached
 	// prompt reports zero input; the prompt is uncounted only when the total
 	// with cache is zero as well. Zero output is uncounted only when content
@@ -570,6 +574,7 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	})
 	info.StreamStatus.RequireTerminal()
 	if err != nil {
+		flushClaudeRestoredOutput(c, info, claudeInfo)
 		return nil, err
 	}
 
@@ -578,6 +583,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 }
 
 func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, httpResp *http.Response, data []byte) *types.NewAPIError {
+	if err := anonymizer.ObserveResponse(c, data); err != nil {
+		return types.NewError(err, types.ErrorCodeBadResponseBody)
+	}
 	var claudeResponse dto.ClaudeResponse
 	err := common.Unmarshal(data, &claudeResponse)
 	if err != nil {

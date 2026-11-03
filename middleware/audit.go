@@ -8,6 +8,7 @@ import (
 	"new-router/constant"
 	"new-router/model"
 	"new-router/service"
+	"new-router/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -205,6 +206,10 @@ const accessTokenAuditContextKey = "access_token_request_audit"
 // Handlers add only allowlisted metadata; neither bodies nor raw errors are persisted.
 func TokenOperationAudit() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !operation_setting.IsAuditLogEnabled() {
+			c.Next()
+			return
+		}
 		var action, content string
 		switch c.Request.Method + " " + c.FullPath() {
 		case "POST /api/token/":
@@ -260,6 +265,10 @@ type accessTokenRequestAudit struct {
 // authentication (for example, rate limiting). It does not grant authentication.
 func AccessTokenAudit() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !operation_setting.IsAuditLogEnabled() {
+			c.Next()
+			return
+		}
 		raw, present := authorizationToken(c.GetHeader("Authorization"))
 		if present {
 			_, internal, _ := service.ParseDashboardAccessToken(raw)
@@ -275,6 +284,9 @@ func AccessTokenAudit() gin.HandlerFunc {
 }
 
 func beginAccessTokenAudit(c *gin.Context, user *model.UserBase, tokenRef string) {
+	if !operation_setting.IsAuditLogEnabled() {
+		return
+	}
 	if _, exists := c.Get(accessTokenAuditContextKey); exists {
 		return
 	}

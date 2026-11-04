@@ -57,6 +57,7 @@ function Fixture({ rules = '[]' }: { rules?: string }) {
             CheckSensitiveOnPromptEnabled: false,
             SensitiveErrorReturnWordsEnabled: false,
             AnonymizationEnabled: false,
+            AnonymizationStableSurrogates: false,
             SensitiveWords: '',
             [rulesKey]: rules,
           }}

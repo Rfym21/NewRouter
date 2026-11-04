@@ -40,6 +40,9 @@ type Vault struct {
 	rawTexts      map[rawTextKey]struct{}
 	bytes         int
 	err           error
+	// stable derives surrogates deterministically per engagement instead of
+	// drawing fresh randomness per request.
+	stable bool
 	// sorted caches the longest-surrogate-first Mappings result per engagement;
 	// invalidated on GetOrCreate. Deanonymize calls Mappings once per restored
 	// string, so caching avoids re-copying and re-sorting on every stream chunk.
@@ -56,6 +59,28 @@ func NewVault() *Vault {
 		rawTexts: make(map[rawTextKey]struct{}),
 		sorted:   make(map[string][]Mapping),
 	}
+}
+
+// SetStableSurrogates switches the vault between per-request random
+// surrogates and deterministic per-engagement surrogates. It must run before
+// any GetOrCreate call to apply to the whole request.
+func (v *Vault) SetStableSurrogates(enabled bool) {
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.stable = enabled
+}
+
+// surrogateFor generates one candidate. The attempt index keeps collision
+// retries reproducible in stable mode: the same original replays the same
+// candidate sequence.
+func (v *Vault) surrogateFor(engagement, original, entityType string, attempt int) string {
+	if v.stable {
+		return GenerateStableSurrogate(stableSurrogateSalt(engagement), original, entityType, attempt)
+	}
+	return GenerateSurrogate(original, entityType)
 }
 
 // GetOrCreate returns the existing surrogate or creates one for the engagement.
@@ -83,18 +108,19 @@ func (v *Vault) GetOrCreate(engagement string, original string, entityType strin
 		return Mapping{}
 	}
 
-	surrogate := GenerateSurrogate(original, entityType)
+	surrogate := ""
 	available := false
-	for i := 0; i < 200; i++ {
-		usedKey := engagement + "\x00" + surrogate
+	for attempt := 0; attempt < 200; attempt++ {
+		candidate := v.surrogateFor(engagement, original, entityType, attempt)
+		usedKey := engagement + "\x00" + candidate
 		_, reserved := v.reserved[usedKey]
-		_, rawValue := v.rawTexts[rawTextKey{engagement, sha256.Sum256([]byte(surrogate))}]
-		if _, exists := v.used[usedKey]; !exists && !reserved && !rawValue && surrogate != original {
+		_, rawValue := v.rawTexts[rawTextKey{engagement, sha256.Sum256([]byte(candidate))}]
+		if _, exists := v.used[usedKey]; !exists && !reserved && !rawValue && candidate != original {
+			surrogate = candidate
 			v.used[usedKey] = struct{}{}
 			available = true
 			break
 		}
-		surrogate = GenerateSurrogate(original, entityType)
 	}
 	if !available {
 		v.err = errors.New("anonymization replacement capacity exceeded")
@@ -222,6 +248,16 @@ func (s *Session) WithDetector(ctx context.Context, detector Detector) *Session 
 			s.ctx = ctx
 		}
 		s.detector = detector
+	}
+	return s
+}
+
+// WithStableSurrogates selects deterministic per-engagement surrogates for
+// this request so full-history clients keep upstream prompt caches effective.
+// Imported continuation mappings keep precedence over newly derived ones.
+func (s *Session) WithStableSurrogates(enabled bool) *Session {
+	if s != nil {
+		s.vault.SetStableSurrogates(enabled)
 	}
 	return s
 }

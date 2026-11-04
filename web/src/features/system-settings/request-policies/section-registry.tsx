@@ -34,6 +34,8 @@ const POLICY_SECTIONS = [
           SensitiveErrorReturnWordsEnabled:
             settings.SensitiveErrorReturnWordsEnabled,
           AnonymizationEnabled: settings.AnonymizationEnabled,
+          AnonymizationStableSurrogates:
+            settings.AnonymizationStableSurrogates ?? false,
           'anonymization_setting.custom_rules':
             settings['anonymization_setting.custom_rules'] ?? '[]',
           SensitiveWords: settings.SensitiveWords,

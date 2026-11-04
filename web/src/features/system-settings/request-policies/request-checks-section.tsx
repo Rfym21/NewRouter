@@ -55,6 +55,7 @@ const sensitiveSchema = z.object({
   CheckSensitiveOnPromptEnabled: z.boolean(),
   SensitiveErrorReturnWordsEnabled: z.boolean(),
   AnonymizationEnabled: z.boolean(),
+  AnonymizationStableSurrogates: z.boolean(),
   SensitiveWords: z.string().optional(),
   anonymization_setting: z.object({
     custom_rules: z
@@ -246,6 +247,31 @@ export function RequestChecksSection({
                 </SettingsSwitchItem>
               )}
             />
+
+            <SettingsControlChildren>
+              <FormField
+                control={form.control}
+                name='AnonymizationStableSurrogates'
+                render={({ field }) => (
+                  <SettingsSwitchItem>
+                    <SettingsSwitchContent>
+                      <FormLabel>{t('Enable stable surrogate mode')}</FormLabel>
+                      <FormDescription>
+                        {t(
+                          'The same sensitive value maps to the same surrogate within each user and token, keeping upstream prompt caches effective for full-history clients such as Claude Code. Surrogates never link values across users or tokens.'
+                        )}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+            </SettingsControlChildren>
           </SettingsControlGroup>
 
           <FormField

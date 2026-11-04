@@ -53,3 +53,11 @@ func AnonymizationDetector() (anonymizer.Detector, error) {
 // AnonymizationEnabled controls whether request/response anonymization is
 // enabled by default. Channel settings can override this default per channel.
 var AnonymizationEnabled = false
+
+// AnonymizationStableSurrogates controls whether surrogates are derived
+// deterministically per user/token engagement instead of drawn fresh per
+// request. Stable surrogates keep request prefixes byte-identical across
+// turns, so upstream prompt caches stay effective for full-history clients;
+// the trade-off is that one original always maps to one pseudonym inside an
+// engagement while values never link across users or tokens.
+var AnonymizationStableSurrogates = false

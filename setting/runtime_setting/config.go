@@ -6,6 +6,7 @@ import (
 
 	"new-router/common"
 	"new-router/constant"
+	"new-router/pkg/anonymizer"
 	"new-router/setting/config"
 )
 
@@ -36,6 +37,8 @@ type RuntimeSetting struct {
 	GetMediaTokenEnabled          bool   `json:"get_media_token_enabled"`
 	GetMediaTokenNotStreamEnabled bool   `json:"get_media_token_not_stream_enabled"`
 	MaxFileDownloadMB             int    `json:"max_file_download_mb"`
+	AnonymizationContextTTLSeconds int   `json:"anonymization_context_ttl_seconds"`
+	AnonymizationMaxContexts       int   `json:"anonymization_max_contexts"`
 	ChannelTestRequestInterval    int    `json:"channel_test_request_interval"`
 	NotifyLimitCount              int    `json:"notify_limit_count"`
 	NotificationLimitDuration     int    `json:"notification_limit_duration"`
@@ -76,7 +79,10 @@ var runtimeSetting = RuntimeSetting{
 	GetMediaTokenEnabled:          true,
 	GetMediaTokenNotStreamEnabled: false,
 	MaxFileDownloadMB:             64,
-	ChannelTestRequestInterval:    0,
+	// 匿名化上下文沿用环境变量作为初始默认;面板保存后热覆盖。
+	AnonymizationContextTTLSeconds: common.GetEnvOrDefault("ANONYMIZATION_CONTEXT_TTL_SECONDS", 3600),
+	AnonymizationMaxContexts:       common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXTS", 1024),
+	ChannelTestRequestInterval:     0,
 	NotifyLimitCount:              2,
 	NotificationLimitDuration:     10,
 	DebugEnabled:                  false,
@@ -154,6 +160,7 @@ func ApplyToRuntime() {
 	constant.NotifyLimitCount = runtimeSetting.NotifyLimitCount
 	constant.NotificationLimitDurationMinute = runtimeSetting.NotificationLimitDuration
 	constant.ErrorLogEnabled = runtimeSetting.ErrorLogEnabled
+	anonymizer.SetContextStoreLimits(runtimeSetting.AnonymizationMaxContexts, runtimeSetting.AnonymizationContextTTLSeconds)
 
 	current := transportConfig{
 		relayTimeout:        runtimeSetting.RelayTimeout,

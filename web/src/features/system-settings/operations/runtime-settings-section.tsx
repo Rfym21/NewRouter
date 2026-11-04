@@ -77,6 +77,8 @@ const runtimeSchema = z.object({
     search_rate_limit_duration: z.coerce.number().min(1),
     azure_default_api_version: z.string(),
     max_file_download_mb: z.coerce.number().min(1),
+    anonymization_context_ttl_seconds: z.coerce.number().min(60).max(86400),
+    anonymization_max_contexts: z.coerce.number().min(16).max(65536),
     force_stream_option_enabled: z.boolean(),
     count_token_enabled: z.boolean(),
     get_media_token_enabled: z.boolean(),
@@ -123,6 +125,8 @@ type FlatRuntimeDefaults = {
   'runtime_setting.search_rate_limit_duration': number
   'runtime_setting.azure_default_api_version': string
   'runtime_setting.max_file_download_mb': number
+  'runtime_setting.anonymization_context_ttl_seconds': number
+  'runtime_setting.anonymization_max_contexts': number
   'runtime_setting.force_stream_option_enabled': boolean
   'runtime_setting.count_token_enabled': boolean
   'runtime_setting.get_media_token_enabled': boolean
@@ -152,6 +156,13 @@ type RuntimeSettingsSectionProps = {
 // every field in this section.
 const clampMin = (value: number, min: number): number =>
   Number.isFinite(value) ? Math.max(min, value) : min
+
+// Same reason as clampMin, but for bounded fields where an out-of-range
+// stored value must also be pulled back inside the schema window.
+const clampRange = (value: number, min: number, max: number): number =>
+  Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : min
 
 const buildFormDefaults = (
   defaults: FlatRuntimeDefaults
@@ -223,6 +234,16 @@ const buildFormDefaults = (
     max_file_download_mb: clampMin(
       defaults['runtime_setting.max_file_download_mb'],
       1
+    ),
+    anonymization_context_ttl_seconds: clampRange(
+      defaults['runtime_setting.anonymization_context_ttl_seconds'],
+      60,
+      86400
+    ),
+    anonymization_max_contexts: clampRange(
+      defaults['runtime_setting.anonymization_max_contexts'],
+      16,
+      65536
     ),
     force_stream_option_enabled:
       defaults['runtime_setting.force_stream_option_enabled'],
@@ -316,6 +337,10 @@ const normalizeFormValues = (
     values.runtime_setting.azure_default_api_version.trim(),
   'runtime_setting.max_file_download_mb':
     values.runtime_setting.max_file_download_mb,
+  'runtime_setting.anonymization_context_ttl_seconds':
+    values.runtime_setting.anonymization_context_ttl_seconds,
+  'runtime_setting.anonymization_max_contexts':
+    values.runtime_setting.anonymization_max_contexts,
   'runtime_setting.force_stream_option_enabled':
     values.runtime_setting.force_stream_option_enabled,
   'runtime_setting.count_token_enabled':
@@ -533,6 +558,67 @@ export function RuntimeSettingsSection({
                       {...safeNumberFieldProps(field)}
                     />
                   </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div>
+            <h4 className='font-medium'>{t('Anonymization context cache')}</h4>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t(
+                'Retention window for anonymization mappings used when continuing earlier conversations. Redis-backed deployments share this across instances.'
+              )}
+            </p>
+          </div>
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-3'>
+            <FormField
+              control={form.control}
+              name='runtime_setting.anonymization_context_ttl_seconds'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Anonymization context TTL (seconds)')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={60}
+                      max={86400}
+                      step={1}
+                      {...safeNumberFieldProps(field)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('Idle time before saved mappings expire (60-86400)')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='runtime_setting.anonymization_max_contexts'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Anonymization context max entries')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={16}
+                      max={65536}
+                      step={1}
+                      {...safeNumberFieldProps(field)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Oldest references are evicted first (16-65536). One response, output item, ciphertext or signature each counts as one reference.'
+                    )}
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

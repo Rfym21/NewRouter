@@ -181,6 +181,7 @@ func InitOptionMap() {
 	common.OptionMap["MjActionCheckSuccessEnabled"] = strconv.FormatBool(setting.MjActionCheckSuccessEnabled)
 	common.OptionMap["CheckSensitiveEnabled"] = strconv.FormatBool(setting.CheckSensitiveEnabled)
 	common.OptionMap["AnonymizationEnabled"] = strconv.FormatBool(setting.AnonymizationEnabled)
+	common.OptionMap["AnonymizationStableSurrogates"] = strconv.FormatBool(setting.AnonymizationStableSurrogates)
 	common.OptionMap[setting.AnonymizationRulesOptionKey] = "[]"
 	common.OptionMap["DemoSiteEnabled"] = strconv.FormatBool(operation_setting.DemoSiteEnabled)
 	common.OptionMap["SelfUseModeEnabled"] = strconv.FormatBool(operation_setting.SelfUseModeEnabled)
@@ -523,6 +524,8 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.CheckSensitiveEnabled = boolValue
 		case "AnonymizationEnabled":
 			setting.AnonymizationEnabled = boolValue
+		case "AnonymizationStableSurrogates":
+			setting.AnonymizationStableSurrogates = boolValue
 		case "SensitiveErrorReturnWordsEnabled":
 			common.SensitiveErrorReturnWordsEnabled = boolValue
 		case "DemoSiteEnabled":

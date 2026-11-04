@@ -86,6 +86,8 @@ const defaultOperationsSettings: OperationsSettings = {
   'runtime_setting.search_rate_limit_duration': 60,
   'runtime_setting.azure_default_api_version': '2025-04-01-preview',
   'runtime_setting.max_file_download_mb': 64,
+  'runtime_setting.anonymization_context_ttl_seconds': 3600,
+  'runtime_setting.anonymization_max_contexts': 1024,
   'runtime_setting.force_stream_option_enabled': true,
   'runtime_setting.count_token_enabled': true,
   'runtime_setting.get_media_token_enabled': true,

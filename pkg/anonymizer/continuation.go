@@ -331,11 +331,38 @@ func newContextStore(maxEntries int, ttl time.Duration, now func() time.Time) *c
 	return &contextStore{refs: make(map[string]savedReference), snapshots: make(map[string]*savedContext), maxEntries: maxEntries, ttl: ttl, now: now}
 }
 
-var defaultContextStore = newContextStore(
-	min(max(common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXTS", 1024), 16), 65536),
-	time.Duration(min(max(common.GetEnvOrDefault("ANONYMIZATION_CONTEXT_TTL_SECONDS", 3600), 60), 86400))*time.Second,
-	time.Now,
-)
+// clampContextLimits enforces the same bounds as the environment defaults.
+func clampContextLimits(maxEntries, ttlSeconds int) (int, time.Duration) {
+	return min(max(maxEntries, 16), 65536), time.Duration(min(max(ttlSeconds, 60), 86400))*time.Second
+}
+
+var defaultContextStore = func() *contextStore {
+	entries, ttl := clampContextLimits(
+		common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXTS", 1024),
+		common.GetEnvOrDefault("ANONYMIZATION_CONTEXT_TTL_SECONDS", 3600),
+	)
+	return newContextStore(entries, ttl, time.Now)
+}()
+
+// SetContextStoreLimits hot-applies runtime limits to the default continuation
+// store. A shorter TTL only affects saves and renewals from this point on;
+// entries already stored in Redis keep their remaining TTL.
+func SetContextStoreLimits(maxEntries, ttlSeconds int) {
+	entries, ttl := clampContextLimits(maxEntries, ttlSeconds)
+	s := defaultContextStore
+	s.mu.Lock()
+	s.maxEntries = entries
+	s.ttl = ttl
+	s.mu.Unlock()
+}
+
+// limits snapshots the runtime-mutable bounds under the store lock; the Redis
+// paths run outside it because their pipelines hold their own timeouts.
+func (s *contextStore) limits() (int, time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxEntries, s.ttl
+}
 
 func continuationCacheKey(scope, ref string) string {
 	digest := sha256.Sum256([]byte(scope + "\x00" + ref))
@@ -363,7 +390,8 @@ func (s *contextStore) save(ctx context.Context, scope string, refs []string, ma
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len(refs) > s.maxEntries {
+	maxEntries, _ := s.limits()
+	if len(refs) > maxEntries {
 		return errors.New("too many anonymization context references")
 	}
 	data, err := encodeMappings(mappings)
@@ -423,6 +451,7 @@ func (s *contextStore) load(ctx context.Context, scope, ref string) ([]Mapping, 
 	key := continuationCacheKey(scope, ref)
 	var data []byte
 	if common.RedisEnabled && common.RDB != nil {
+		_, ttl := s.limits()
 		bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		encoded, err := common.RDB.Get(bounded, key).Bytes()
@@ -434,7 +463,7 @@ func (s *contextStore) load(ctx context.Context, scope, ref string) ([]Mapping, 
 			return nil, ErrContinuationUnavailable
 		}
 		_, err = common.RDB.TxPipelined(bounded, func(pipe redis.Pipeliner) error {
-			pipe.Expire(bounded, key, s.ttl)
+			pipe.Expire(bounded, key, ttl)
 			pipe.ZAdd(bounded, "anonymization:v1:expiry", &redis.Z{Score: float64(s.now().UnixMilli()), Member: key})
 			return nil
 		})
@@ -519,6 +548,7 @@ func openContext(key string, data []byte) ([]byte, error) {
 }
 
 func (s *contextStore) saveRedis(ctx context.Context, keys []string, data []byte) error {
+	maxEntries, ttl := s.limits()
 	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	const index = "anonymization:v1:expiry"
@@ -528,10 +558,10 @@ func (s *contextStore) saveRedis(ctx context.Context, keys []string, data []byte
 			if err != nil {
 				return err
 			}
-			pipe.Set(bounded, key, encoded, s.ttl)
+			pipe.Set(bounded, key, encoded, ttl)
 			pipe.ZAdd(bounded, index, &redis.Z{Score: float64(s.now().UnixMilli()), Member: key})
 		}
-		pipe.ZRemRangeByScore(bounded, index, "-inf", strconv.FormatInt(s.now().Add(-s.ttl).UnixMilli(), 10))
+		pipe.ZRemRangeByScore(bounded, index, "-inf", strconv.FormatInt(s.now().Add(-ttl).UnixMilli(), 10))
 		return nil
 	})
 	if err != nil {
@@ -541,7 +571,7 @@ func (s *contextStore) saveRedis(ctx context.Context, keys []string, data []byte
 	if err != nil {
 		return err
 	}
-	if excess := count - int64(s.maxEntries); excess > 0 {
+	if excess := count - int64(maxEntries); excess > 0 {
 		stale, err := common.RDB.ZRange(bounded, index, 0, excess-1).Result()
 		if err != nil {
 			return err

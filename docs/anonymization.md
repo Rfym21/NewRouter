@@ -49,7 +49,13 @@
 
 映射默认在闲置一小时后过期，内存缓存还受引用数和 32 MiB 总数据限制。启用 Redis 后，映射通过 AES-GCM 加密保存，并绑定用户/令牌对应的缓存键。多实例使用同一 Redis 和 CRYPTO_SECRET；未显式设置 CRYPTO_SECRET 时使用 SESSION_SECRET。未启用 Redis 时，重启或切换到其他实例后，需要开始新会话。
 
-`ANONYMIZATION_CONTEXT_TTL_SECONDS` 控制闲置过期时间（60～86400 秒，默认 3600）；`ANONYMIZATION_MAX_CONTEXTS` 控制引用数（16～65536，默认 1024）。一个 response、output item、密文或签名各计一个引用。单份保存的映射最多 128 KiB，超限会在请求准备阶段返回错误。
+闲置过期时间与引用数上限可在 `/system-settings/operations/runtime` 的“匿名化上下文缓存”中调整，保存后热生效（Redis 中已写入条目按原 TTL 自然过期）。`ANONYMIZATION_CONTEXT_TTL_SECONDS`（60～86400 秒，默认 3600）和 `ANONYMIZATION_MAX_CONTEXTS`（16～65536，默认 1024）仅作为初始默认值。一个 response、output item、密文或签名各计一个引用。单份保存的映射最多 128 KiB，超限会在请求准备阶段返回错误。
+
+## 稳定假名模式
+
+默认模式下，每个请求都为敏感值随机生成新假值；完整重发历史的客户端（如 Claude Code 等 Anthropic Messages 协议工具）每轮前缀都会变化，上游提示词缓存无法命中。在 `/system-settings/request-policies/filtering` 开启“启用稳定假名模式”后，同一敏感值在同一用户和令牌内始终映射到同一假值：假值由 `HMAC(以 CRYPTO_SECRET 派生的用户/令牌盐, 实体值)` 确定性生成，跨请求、跨实例一致，前缀缓存恢复正常命中；Responses 式续聊的响应还原仍依赖上面的上下文缓存。
+
+该模式的安全性边界：上游可为同一用户会话内的同一实体建立稳定关联（上游本来就能通过 API Key 关联同用户请求，属既有暴露面）；不同用户或令牌之间的假值互不相同，无法跨身份关联；更换 CRYPTO_SECRET 后全部假值随之改变。追求最大不可关联性时保持默认的随机模式即可。
 
 ## 可选语义识别
 

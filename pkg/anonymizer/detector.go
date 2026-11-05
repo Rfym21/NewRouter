@@ -39,6 +39,7 @@ type Match struct {
 type patternSpec struct {
 	entityType string
 	re         *regexp.Regexp
+	gate       patternGate
 }
 
 type span struct {
@@ -154,7 +155,7 @@ func buildNeverAnonymize() map[string]struct{} {
 }
 
 func mustPattern(entityType string, expr string) patternSpec {
-	return patternSpec{entityType: entityType, re: regexp.MustCompile(expr)}
+	return patternSpec{entityType: entityType, re: regexp.MustCompile(expr), gate: compilePatternGate(expr)}
 }
 
 // Detect runs deterministic structured-data detection over text.
@@ -167,26 +168,21 @@ func detectStructured(text string, existing []span) []Match {
 		return nil
 	}
 	matches := make([]Match, 0)
-	covered := append([]span(nil), existing...)
-
-	overlaps := func(start int, end int) bool {
-		for _, current := range covered {
-			if start < current.end && end > current.start {
-				return true
-			}
-		}
-		return false
-	}
+	covered := newSpanIndex(existing)
+	features := detectorPrefilter.inspect(text)
 
 	// Check explicit identifiers before generic numeric/hash rules. Labels and
 	// validation prevent token counters and arbitrary digit strings becoming PII.
 	for _, spec := range chinesePatterns {
+		if !spec.gate.possible(features) {
+			continue
+		}
 		for _, idx := range spec.re.FindAllStringSubmatchIndex(text, -1) {
 			start, end := idx[0], idx[1]
 			if len(idx) >= 4 && idx[2] >= 0 {
 				start, end = idx[2], idx[3]
 			}
-			if overlaps(start, end) || end <= start {
+			if covered.overlaps(start, end) || end <= start {
 				continue
 			}
 			value := strings.TrimSpace(text[start:end])
@@ -202,11 +198,15 @@ func detectStructured(text string, existing []span) []Match {
 				continue
 			}
 			matches = append(matches, Match{Text: value, EntityType: spec.entityType, Start: start, End: end})
-			covered = append(covered, span{start: start, end: end})
+			covered.add(start, end)
 		}
+		covered.merge()
 	}
 
 	for _, spec := range detectorPatterns {
+		if !spec.gate.possible(features) {
+			continue
+		}
 		for _, idx := range spec.re.FindAllStringSubmatchIndex(text, -1) {
 			if len(idx) < 2 || idx[0] < 0 || idx[1] <= idx[0] {
 				continue
@@ -218,7 +218,7 @@ func detectStructured(text string, existing []span) []Match {
 					break
 				}
 			}
-			if overlaps(start, end) {
+			if covered.overlaps(start, end) {
 				continue
 			}
 			value := strings.TrimSpace(text[start:end])
@@ -228,19 +228,23 @@ func detectStructured(text string, existing []span) []Match {
 			start += strings.Index(text[start:end], value)
 			end = start + len(value)
 			matches = append(matches, Match{Text: value, EntityType: spec.entityType, Start: start, End: end})
-			covered = append(covered, span{start: start, end: end})
+			covered.add(start, end)
 		}
+		covered.merge()
 	}
 
+	if !panGate.possible(features) {
+		return matches
+	}
 	for _, idx := range panPattern.FindAllStringIndex(text, -1) {
-		if len(idx) != 2 || overlaps(idx[0], idx[1]) {
+		if len(idx) != 2 || covered.overlaps(idx[0], idx[1]) {
 			continue
 		}
 		value := text[idx[0]:idx[1]]
 		digits := digitsOnly(value)
 		if len(digits) >= 13 && luhnValid(digits) {
 			matches = append(matches, Match{Text: strings.TrimSpace(value), EntityType: "CREDENTIAL", Start: idx[0], End: idx[1]})
-			covered = append(covered, span{start: idx[0], end: idx[1]})
+			covered.add(idx[0], idx[1])
 		}
 	}
 

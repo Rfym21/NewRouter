@@ -1,0 +1,24 @@
+goos: windows
+goarch: amd64
+pkg: new-router/pkg/anonymizer
+cpu: AMD Ryzen 9 9950X3D 16-Core Processor
+BenchmarkStreamPerformance/mappings_1/hit_false         	 9081459	        39.27 ns/op	1018.53 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_false         	 9109034	        39.40 ns/op	1015.16 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_false         	 9200313	        39.22 ns/op	1019.92 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_true          	 5138503	        69.05 ns/op	 564.79 MB/s	      48 B/op	       1 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_true          	 5335696	        68.15 ns/op	 572.28 MB/s	      48 B/op	       1 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_true          	 5302382	        67.38 ns/op	 578.84 MB/s	      48 B/op	       1 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_false      	10223554	        35.57 ns/op	1124.46 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_false      	10147734	        35.99 ns/op	1111.30 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_false      	10131883	        37.83 ns/op	1057.32 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_true       	 2895579	       126.5 ns/op	 308.22 MB/s	     120 B/op	       3 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_true       	 2902834	       117.2 ns/op	 332.67 MB/s	     120 B/op	       3 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_true       	 2968430	       117.3 ns/op	 332.43 MB/s	     120 B/op	       3 allocs/op
+BenchmarkStreamSetupPerformance/1                       	 1765761	       203.7 ns/op	     424 B/op	       8 allocs/op
+BenchmarkStreamSetupPerformance/1                       	 1838508	       200.3 ns/op	     424 B/op	       8 allocs/op
+BenchmarkStreamSetupPerformance/1                       	 1815927	       197.8 ns/op	     424 B/op	       8 allocs/op
+BenchmarkStreamSetupPerformance/1000                    	    3939	     91366 ns/op	  284188 B/op	     574 allocs/op
+BenchmarkStreamSetupPerformance/1000                    	    3703	     95448 ns/op	  284189 B/op	     574 allocs/op
+BenchmarkStreamSetupPerformance/1000                    	    3844	     95280 ns/op	  284188 B/op	     574 allocs/op
+PASS
+ok  	new-router/pkg/anonymizer	6.567s

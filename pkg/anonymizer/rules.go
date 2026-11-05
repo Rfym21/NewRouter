@@ -1,6 +1,8 @@
 package anonymizer
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"regexp/syntax"
@@ -35,7 +37,8 @@ type compiledRule struct {
 // RuleSet is immutable after compilation and can be shared by concurrent
 // request snapshots. Source rules and their sensitive patterns are not exposed.
 type RuleSet struct {
-	rules []compiledRule
+	rules       []compiledRule
+	fingerprint [32]byte
 }
 
 var customRuleEntities = map[string]struct{}{
@@ -105,6 +108,11 @@ func CompileRules(rules []Rule) (*RuleSet, error) {
 			compiled.rules = append(compiled.rules, entry)
 		}
 	}
+	encoded, err := json.Marshal(rules)
+	if err != nil {
+		return nil, fmt.Errorf("invalid custom anonymization rules")
+	}
+	compiled.fingerprint = sha256.Sum256(encoded)
 	return compiled, nil
 }
 

@@ -1,0 +1,48 @@
+goos: windows
+goarch: amd64
+pkg: new-router/pkg/anonymizer
+cpu: AMD Ryzen 9 9950X3D 16-Core Processor
+BenchmarkDetectPerformance/plain/10240         	      18	  10165733 ns/op	   1.01 MB/s	    1762 B/op	       4 allocs/op
+BenchmarkDetectPerformance/plain/10240         	      16	  10311469 ns/op	   0.99 MB/s	      35 B/op	       0 allocs/op
+BenchmarkDetectPerformance/plain/10240         	      16	  10167950 ns/op	   1.01 MB/s	      35 B/op	       0 allocs/op
+BenchmarkDetectPerformance/plain/153600        	       1	 151231400 ns/op	   1.02 MB/s	     440 B/op	       6 allocs/op
+BenchmarkDetectPerformance/plain/153600        	       1	 152576200 ns/op	   1.01 MB/s	     440 B/op	       6 allocs/op
+BenchmarkDetectPerformance/plain/153600        	       1	 152647600 ns/op	   1.01 MB/s	     440 B/op	       6 allocs/op
+BenchmarkDetectPerformance/code/10240          	      16	  10603856 ns/op	   0.97 MB/s	      73 B/op	       1 allocs/op
+BenchmarkDetectPerformance/code/10240          	      16	  10850019 ns/op	   0.94 MB/s	      35 B/op	       0 allocs/op
+BenchmarkDetectPerformance/code/10240          	      16	  10751619 ns/op	   0.95 MB/s	      35 B/op	       0 allocs/op
+BenchmarkDetectPerformance/code/153600         	       1	 160037500 ns/op	   0.96 MB/s	     440 B/op	       6 allocs/op
+BenchmarkDetectPerformance/code/153600         	       1	 157304000 ns/op	   0.98 MB/s	     440 B/op	       6 allocs/op
+BenchmarkDetectPerformance/code/153600         	       1	 158063800 ns/op	   0.97 MB/s	     440 B/op	       6 allocs/op
+BenchmarkDetectPerformance/dense/10240         	      14	  11391879 ns/op	   0.90 MB/s	  146234 B/op	     742 allocs/op
+BenchmarkDetectPerformance/dense/10240         	      15	  11206213 ns/op	   0.91 MB/s	  146133 B/op	     739 allocs/op
+BenchmarkDetectPerformance/dense/10240         	      15	  11186267 ns/op	   0.92 MB/s	  146133 B/op	     739 allocs/op
+BenchmarkDetectPerformance/dense/153600        	       1	 177477400 ns/op	   0.87 MB/s	 2953824 B/op	   10344 allocs/op
+BenchmarkDetectPerformance/dense/153600        	       1	 176919300 ns/op	   0.87 MB/s	 2953824 B/op	   10344 allocs/op
+BenchmarkDetectPerformance/dense/153600        	       1	 194189000 ns/op	   0.79 MB/s	 2953824 B/op	   10344 allocs/op
+BenchmarkDetectPerformance/unicode/10240       	      44	   3829230 ns/op	   2.67 MB/s	      15 B/op	       0 allocs/op
+BenchmarkDetectPerformance/unicode/10240       	      40	   3854792 ns/op	   2.66 MB/s	      14 B/op	       0 allocs/op
+BenchmarkDetectPerformance/unicode/10240       	      44	   3874502 ns/op	   2.64 MB/s	      12 B/op	       0 allocs/op
+BenchmarkDetectPerformance/unicode/153600      	       3	  56654733 ns/op	   2.71 MB/s	     146 B/op	       2 allocs/op
+BenchmarkDetectPerformance/unicode/153600      	       3	  62394567 ns/op	   2.46 MB/s	     146 B/op	       2 allocs/op
+BenchmarkDetectPerformance/unicode/153600      	       4	  48177325 ns/op	   3.19 MB/s	     110 B/op	       1 allocs/op
+BenchmarkRequestPerformance/slots_1            	       1	 188414800 ns/op	   0.85 MB/s	 1204248 B/op	     158 allocs/op
+BenchmarkRequestPerformance/slots_1            	       1	 182810000 ns/op	   0.88 MB/s	 1167368 B/op	      67 allocs/op
+BenchmarkRequestPerformance/slots_1            	       1	 186117000 ns/op	   0.86 MB/s	 1167368 B/op	      67 allocs/op
+BenchmarkRequestPerformance/slots_200          	      15	  11387347 ns/op	   1.38 MB/s	  230116 B/op	    2590 allocs/op
+BenchmarkRequestPerformance/slots_200          	      14	  11838193 ns/op	   1.33 MB/s	  228660 B/op	    2584 allocs/op
+BenchmarkRequestPerformance/slots_200          	      12	  13034550 ns/op	   1.20 MB/s	  228678 B/op	    2584 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_false         	 3066894	        54.46 ns/op	 734.51 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_false         	 3060172	        60.84 ns/op	 657.45 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_false         	 2577577	        62.32 ns/op	 641.85 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_true          	  192801	       782.6 ns/op	  49.84 MB/s	    2600 B/op	       7 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_true          	  180055	       904.6 ns/op	  43.11 MB/s	    2600 B/op	       7 allocs/op
+BenchmarkStreamPerformance/mappings_1/hit_true          	  183201	       890.1 ns/op	  43.81 MB/s	    2600 B/op	       7 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_false      	    4873	     36622 ns/op	   1.09 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_false      	    5198	     34957 ns/op	   1.14 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_false      	    4243	     36064 ns/op	   1.11 MB/s	       0 B/op	       0 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_true       	    5064	     37522 ns/op	   1.04 MB/s	    2600 B/op	       7 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_true       	    4468	     37510 ns/op	   1.04 MB/s	    2600 B/op	       7 allocs/op
+BenchmarkStreamPerformance/mappings_1000/hit_true       	    5527	     41233 ns/op	   0.95 MB/s	    2600 B/op	       7 allocs/op
+PASS
+ok  	new-router/pkg/anonymizer	12.799s

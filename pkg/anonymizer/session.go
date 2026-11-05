@@ -180,6 +180,7 @@ var DefaultVault = NewVault()
 // Session applies anonymization and deanonymization for one relay request.
 type Session struct {
 	engagement       string
+	detectionScope   [32]byte
 	vault            *Vault
 	ctx              context.Context
 	detector         Detector
@@ -231,7 +232,7 @@ func NewSession(engagement string, vault *Vault) *Session {
 	if vault == nil {
 		vault = NewVault()
 	}
-	return &Session{engagement: engagement, vault: vault, ctx: context.Background()}
+	return &Session{engagement: engagement, detectionScope: sha256.Sum256([]byte(engagement)), vault: vault, ctx: context.Background()}
 }
 
 // WithRules snapshots the validated rules for this request.
@@ -437,7 +438,7 @@ func (s *Session) reserveRawText(text string) bool {
 }
 
 func (s *Session) detectedMatches(text string, raw bool) []preparedMatch {
-	matches := DetectWithRules(text, s.rules)
+	matches := s.localMatches(text)
 	if s.detector != nil {
 		extra, cached := s.analysis[text]
 		if !cached {
@@ -476,22 +477,17 @@ func (s *Session) detectedMatches(text string, raw bool) []preparedMatch {
 	// Raw input is authoritative even if it literally contains an earlier alias.
 	// Give explicit custom rules precedence; then recognize complete old aliases
 	// before heuristics which might recognize only an IP inside a fake URL.
-	var forced []Match
+	var forced map[span]struct{}
 	if raw {
 		var selected []Match
+		var reserved []span
 		for _, match := range matches {
 			if match.RuleName != "" {
 				selected = append(selected, match)
+				reserved = append(reserved, span{match.Start, match.End})
 			}
 		}
-		overlaps := func(match Match) bool {
-			for _, existing := range selected {
-				if match.Start < existing.End && match.End > existing.Start {
-					return true
-				}
-			}
-			return false
-		}
+		covered := newSpanIndex(reserved)
 		for _, mapping := range s.vault.Mappings(s.engagement) {
 			if mapping.Surrogate == "" {
 				continue
@@ -504,15 +500,23 @@ func (s *Session) detectedMatches(text string, raw bool) []preparedMatch {
 				start := offset + position
 				end := start + len(mapping.Surrogate)
 				candidate := Match{Text: mapping.Surrogate, EntityType: mapping.EntityType, Start: start, End: end}
-				if !overlaps(candidate) {
+				if !covered.overlaps(start, end) {
 					selected = append(selected, candidate)
-					forced = append(forced, candidate)
+					covered.add(start, end)
+					if forced == nil {
+						forced = make(map[span]struct{})
+					}
+					forced[span{start, end}] = struct{}{}
 				}
 				offset = end
 			}
+			covered.merge()
 		}
+		// Local rules and the external merge already produce pairwise disjoint
+		// matches. Only the higher-priority custom/old-alias spans can exclude
+		// them; accepted heuristic spans need not be compared to one another.
 		for _, match := range matches {
-			if match.RuleName == "" && !overlaps(match) {
+			if match.RuleName == "" && !covered.overlaps(match.Start, match.End) {
 				selected = append(selected, match)
 			}
 		}
@@ -520,13 +524,7 @@ func (s *Session) detectedMatches(text string, raw bool) []preparedMatch {
 	}
 	filtered := make([]preparedMatch, 0, len(matches))
 	for _, match := range matches {
-		isAlias := false
-		for _, candidate := range forced {
-			if candidate.Start == match.Start && candidate.End == match.End {
-				isAlias = true
-				break
-			}
-		}
+		_, isAlias := forced[span{match.Start, match.End}]
 		if (!isAlias && match.RuleName == "" && shouldKeepOriginal(match.Text, match.EntityType)) || (!raw && s.isSurrogateMatch(text, match)) {
 			continue
 		}

@@ -13,11 +13,15 @@ import "strings"
 // a single goroutine. The relay stream handlers already run their per-chunk
 // callback serially (see helper.StreamScannerHandler), so this holds.
 type StreamRestorer struct {
-	session     *Session
-	surrogates  []string // snapshot of this engagement's surrogates
-	maxLen      int      // longest surrogate length
-	carry       map[string]string
-	jsonStreams map[string]*jsonStreamState
+	session        *Session
+	surrogates     []string // snapshot of this engagement's surrogates
+	replacer       *strings.Replacer
+	trie           []surrogateNode
+	starts         [4]uint64
+	singleOriginal string
+	maxLen         int // longest surrogate length
+	carry          map[string]string
+	jsonStreams    map[string]*jsonStreamState
 }
 
 // NewStreamRestorer snapshots the session's current surrogate set for streaming
@@ -33,21 +37,31 @@ func (s *Session) NewStreamRestorer() *StreamRestorer {
 	mappings := s.vault.Mappings(s.engagement)
 	surrogates := make([]string, 0, len(mappings))
 	maxLen := 0
+	pairs := make([]string, 0, len(mappings)*2)
 	for _, m := range mappings {
 		if m.Surrogate == "" {
 			continue
 		}
 		surrogates = append(surrogates, m.Surrogate)
+		pairs = append(pairs, m.Surrogate, m.Original)
 		if len(m.Surrogate) > maxLen {
 			maxLen = len(m.Surrogate)
 		}
 	}
-	return &StreamRestorer{
+	r := &StreamRestorer{
 		session:    s,
 		surrogates: surrogates,
 		maxLen:     maxLen,
 		carry:      make(map[string]string),
 	}
+	if len(pairs) > 0 {
+		r.replacer = strings.NewReplacer(pairs...)
+	}
+	if len(pairs) == 2 {
+		r.singleOriginal = pairs[1]
+	}
+	r.buildTrie()
+	return r
 }
 
 // Push appends increment to the buffer for the given logical-stream key and
@@ -70,7 +84,7 @@ func (r *StreamRestorer) Push(key string, increment string) string {
 	if head == "" {
 		return ""
 	}
-	return r.session.DeanonymizeString(head)
+	return r.restore(head)
 }
 
 // Flush returns the deanonymized residual held for key and clears it. A tail
@@ -85,7 +99,129 @@ func (r *StreamRestorer) Flush(key string) string {
 		return ""
 	}
 	delete(r.carry, key)
-	return r.session.DeanonymizeString(tail)
+	return r.restore(tail)
+}
+
+func (r *StreamRestorer) restore(text string) string {
+	if r.replacer == nil {
+		return text
+	}
+	if len(r.surrogates) == 1 {
+		return strings.ReplaceAll(text, r.surrogates[0], r.singleOriginal)
+	}
+	// The generic Replacer allocates even when no key matches. Reuse the trie
+	// to recognize that common case without scanning every mapping.
+	if !r.containsSurrogate(text) {
+		return text
+	}
+	return r.replacer.Replace(text)
+}
+
+func (r *StreamRestorer) containsSurrogate(text string) bool {
+	for start := 0; start < len(text); start++ {
+		c := text[start]
+		if r.starts[c/64]&(uint64(1)<<(c%64)) == 0 {
+			continue
+		}
+		if r.matchSurrogate(text[start:], 0) {
+			return true
+		}
+	}
+	return false
+}
+
+type surrogateNode struct {
+	edges    []surrogateEdge
+	terminal bool
+}
+
+type surrogateEdge struct {
+	label string
+	child int
+}
+
+func (r *StreamRestorer) edge(state int, first byte) (surrogateEdge, int, bool) {
+	for i, edge := range r.trie[state].edges {
+		if edge.label[0] == first {
+			return edge, i, true
+		}
+	}
+	return surrogateEdge{}, 0, false
+}
+
+func (r *StreamRestorer) buildTrie() {
+	r.trie = make([]surrogateNode, 1)
+	for _, surrogate := range r.surrogates {
+		r.starts[surrogate[0]/64] |= uint64(1) << (surrogate[0] % 64)
+		state, remaining := 0, surrogate
+		for len(remaining) > 0 {
+			edge, index, ok := r.edge(state, remaining[0])
+			if !ok {
+				child := len(r.trie)
+				r.trie = append(r.trie, surrogateNode{terminal: true})
+				r.trie[state].edges = append(r.trie[state].edges, surrogateEdge{remaining, child})
+				break
+			}
+			n := 0
+			for n < len(remaining) && n < len(edge.label) && remaining[n] == edge.label[n] {
+				n++
+			}
+			remaining = remaining[n:]
+			if n == len(edge.label) {
+				state = edge.child
+				if remaining == "" {
+					r.trie[state].terminal = true
+				}
+				continue
+			}
+			// Compressed edges keep the node count proportional to mappings,
+			// including imported aliases and very long HASH values.
+			branch := len(r.trie)
+			r.trie = append(r.trie, surrogateNode{edges: []surrogateEdge{{edge.label[n:], edge.child}}, terminal: remaining == ""})
+			r.trie[state].edges[index] = surrogateEdge{edge.label[:n], branch}
+			if remaining != "" {
+				child := len(r.trie)
+				r.trie = append(r.trie, surrogateNode{terminal: true})
+				r.trie[branch].edges = append(r.trie[branch].edges, surrogateEdge{remaining, child})
+			}
+			break
+		}
+	}
+}
+
+// matchSurrogate recognizes a complete alias ending at or beyond minEnd.
+func (r *StreamRestorer) matchSurrogate(text string, minEnd int) bool {
+	state, offset := 0, 0
+	for offset < len(text) {
+		edge, _, ok := r.edge(state, text[offset])
+		if !ok || !strings.HasPrefix(text[offset:], edge.label) {
+			return false
+		}
+		offset += len(edge.label)
+		state = edge.child
+		if r.trie[state].terminal && offset >= minEnd {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *StreamRestorer) strictSurrogatePrefix(text string) bool {
+	state := 0
+	for len(text) > 0 {
+		edge, _, ok := r.edge(state, text[0])
+		if !ok {
+			return false
+		}
+		if len(text) <= len(edge.label) {
+			return strings.HasPrefix(edge.label, text) && (len(text) < len(edge.label) || len(r.trie[edge.child].edges) > 0)
+		}
+		if !strings.HasPrefix(text, edge.label) {
+			return false
+		}
+		text, state = text[len(edge.label):], edge.child
+	}
+	return false
 }
 
 // PendingKeys returns the keys that still hold a non-empty tail, so a handler
@@ -113,6 +249,20 @@ func (r *StreamRestorer) holdLen(buf string) int {
 	if len(r.surrogates) == 0 || len(buf) == 0 {
 		return 0
 	}
+	if len(r.surrogates) == 1 {
+		sg := r.surrogates[0]
+		for pos := max(0, len(buf)-len(sg)+1); pos < len(buf); pos++ {
+			if !strings.HasPrefix(sg, buf[pos:]) {
+				continue
+			}
+			start, end := max(0, pos-len(sg)+1), min(len(buf), pos+len(sg)-1)
+			if end-start >= len(sg) && strings.Contains(buf[start:end], sg) {
+				continue
+			}
+			return len(buf) - pos
+		}
+		return 0
+	}
 	// A held suffix is a strict prefix of a surrogate, so its length is at most
 	// maxLen-1; scanning positions from the earliest gives the longest suffix first.
 	start := 0
@@ -120,30 +270,25 @@ func (r *StreamRestorer) holdLen(buf string) int {
 		start = len(buf) - limit
 	}
 	for pos := start; pos < len(buf); pos++ {
-		suffix := buf[pos:]
-		for _, sg := range r.surrogates {
-			if len(sg) > len(suffix) && strings.HasPrefix(sg, suffix) {
-				// A full surrogate can itself end in one of these prefixes.
-				// Holding only that suffix would split the complete match, so
-				// neither this chunk nor Flush could restore it afterward.
-				if r.splitsCompleteSurrogate(buf, pos) {
-					continue
-				}
-				return len(buf) - pos
+		if r.starts[buf[pos]/64]&(uint64(1)<<(buf[pos]%64)) == 0 {
+			continue
+		}
+		if r.strictSurrogatePrefix(buf[pos:]) {
+			// A full surrogate can itself end in one of these prefixes.
+			// Holding only that suffix would split the complete match, so
+			// neither this chunk nor Flush could restore it afterward.
+			if r.splitsCompleteSurrogate(buf, pos) {
+				continue
 			}
+			return len(buf) - pos
 		}
 	}
 	return 0
 }
 
 func (r *StreamRestorer) splitsCompleteSurrogate(buf string, boundary int) bool {
-	for _, surrogate := range r.surrogates {
-		// Every full match contained in this window crosses the boundary.
-		// Bound the search to the surrounding surrogate length so large
-		// response chunks do not require rescanning all preceding content.
-		start := max(0, boundary-len(surrogate)+1)
-		end := min(len(buf), boundary+len(surrogate)-1)
-		if end-start >= len(surrogate) && strings.Contains(buf[start:end], surrogate) {
+	for start := max(0, boundary-r.maxLen+1); start < boundary; start++ {
+		if r.matchSurrogate(buf[start:], boundary-start+1) {
 			return true
 		}
 	}

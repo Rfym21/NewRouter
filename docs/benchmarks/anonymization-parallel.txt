@@ -1,0 +1,10 @@
+goos: windows
+goarch: amd64
+pkg: new-router/pkg/anonymizer
+cpu: AMD Ryzen 9 9950X3D 16-Core Processor
+BenchmarkParallelRequestThroughput       	     886	    651003 ns/op	 245.85 MB/s	         0.9991 p50_ms	         1.504 p95_ms	 1322252 B/op	      59 allocs/op
+BenchmarkParallelRequestThroughput-4     	    2832	    207794 ns/op	 770.23 MB/s	         1.001 p50_ms	         1.502 p95_ms	 1388370 B/op	      63 allocs/op
+BenchmarkParallelRequestThroughput-16    	    3844	    137080 ns/op	1167.57 MB/s	         2.136 p50_ms	         3.195 p95_ms	 1574784 B/op	      74 allocs/op
+BenchmarkParallelRequestThroughput-32    	    3500	    147577 ns/op	1084.52 MB/s	         4.531 p50_ms	         6.704 p95_ms	 1625210 B/op	      78 allocs/op
+PASS
+ok  	new-router/pkg/anonymizer	2.451s

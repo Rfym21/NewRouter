@@ -31,6 +31,8 @@ func (r *StreamRestorer) PushJSON(key, fragment string) string {
 	if state == nil {
 		state = &jsonStreamState{text: &StreamRestorer{
 			session: r.session, surrogates: r.surrogates, maxLen: r.maxLen,
+			replacer: r.replacer, trie: r.trie,
+			starts: r.starts, singleOriginal: r.singleOriginal,
 			carry: make(map[string]string),
 		}}
 		r.jsonStreams[key] = state

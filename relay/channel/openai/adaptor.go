@@ -611,31 +611,33 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 				_ = file.Close()
 			}
 
-			// Handle mask file if present
-			if maskFiles, exists := mf.File["mask"]; exists && len(maskFiles) > 0 {
-				maskFile, err := maskFiles[0].Open()
-				if err != nil {
-					return nil, errors.New("failed to open mask file")
+			for _, name := range []string{"mask", "markup"} {
+				files := mf.File[name]
+				if len(files) == 0 {
+					continue
 				}
-				// 复制完立即关闭，避免在循环内使用 defer 占用资源
-
-				// Determine MIME type for mask file
-				mimeType := detectImageMimeType(maskFiles[0].Filename)
-
-				// Create a form file with the appropriate content type
+				file, err := files[0].Open()
+				if err != nil {
+					return nil, fmt.Errorf("open %s file: %w", name, err)
+				}
 				h := make(textproto.MIMEHeader)
-				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="mask"; filename="%s"`, maskFiles[0].Filename))
-				h.Set("Content-Type", mimeType)
-
-				maskPart, err := writer.CreatePart(h)
-				if err != nil {
-					return nil, errors.New("create form file failed for mask")
+				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, name, files[0].Filename))
+				h.Set("Content-Type", detectImageMimeType(files[0].Filename))
+				part, partErr := writer.CreatePart(h)
+				if partErr != nil {
+					if closeErr := file.Close(); closeErr != nil {
+						return nil, fmt.Errorf("create %s part: %w; close file: %v", name, partErr, closeErr)
+					}
+					return nil, fmt.Errorf("create %s part: %w", name, partErr)
 				}
-
-				if _, err := io.Copy(maskPart, maskFile); err != nil {
-					return nil, errors.New("copy mask file failed")
+				_, copyErr := io.Copy(part, file)
+				closeErr := file.Close()
+				if copyErr != nil {
+					return nil, fmt.Errorf("copy %s file: %w", name, copyErr)
 				}
-				_ = maskFile.Close()
+				if closeErr != nil {
+					return nil, fmt.Errorf("close %s file: %w", name, closeErr)
+				}
 			}
 		} else {
 			return nil, errors.New("no multipart form data found")

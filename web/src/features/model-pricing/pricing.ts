@@ -26,8 +26,10 @@ import {
   type ModelRatioData,
 } from '@/features/system-settings/models/model-pricing-core'
 import {
+  buildModelRow,
   buildModelSnapshots,
   type ModelPricingSnapshot,
+  type ModelRow,
 } from '@/features/system-settings/models/model-pricing-snapshots'
 
 import type { ModelPricingEntry } from './api'
@@ -148,10 +150,10 @@ export function pricingOptions(
   return Object.fromEntries(
     PRICING_KEYS.map((key) => {
       let value = values[key]
-      if (key === 'billing_setting.billing_mode') value ??= values.BillingMode
-      if (key === 'billing_setting.billing_expr') value ??= values.BillingExpr
+      if (key === 'billing_setting.billing_mode') value = values.BillingMode ?? value
+      if (key === 'billing_setting.billing_expr') value = values.BillingExpr ?? value
       if (key === 'billing_setting.plugin_billing_expr') {
-        value ??= values.PluginBillingExpr
+        value = values.PluginBillingExpr ?? value
       }
       return [key, typeof value === 'string' ? value : '{}']
     })
@@ -172,6 +174,21 @@ export function pricingRows(options: PricingOptions): ModelPricingSnapshot[] {
     billingExpr: options['billing_setting.billing_expr'],
     pluginBillingExpr: options['billing_setting.plugin_billing_expr'],
   })
+}
+
+/**
+ * Lists semantic price changes between saved options and a draft.
+ * @param saved Persisted pricing options.
+ * @param draft Draft pricing options.
+ * @returns Changed model rows ordered by model name.
+ */
+export function buildPriceChangeRows(saved: PricingOptions, draft: PricingOptions): ModelRow[] {
+  const savedByName = new Map(pricingRows(saved).map((row) => [row.name, row]))
+  const draftByName = new Map(pricingRows(draft).map((row) => [row.name, row]))
+  return [...new Set([...savedByName.keys(), ...draftByName.keys()])]
+    .map((name) => buildModelRow(name, savedByName.get(name), draftByName.get(name)))
+    .filter((row) => row.isDraftChanged)
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export function pricingRow(

@@ -314,3 +314,37 @@ export const getSnapshotSignature = (snapshot?: ModelPricingSnapshot) => {
     ),
   })
 }
+
+/**
+ * Builds one model's saved and draft price comparison.
+ * @param name Model identifier.
+ * @param saved Persisted price snapshot.
+ * @param draft Current draft price snapshot.
+ * @returns Comparison row with draft lifecycle flags.
+ */
+export const buildModelRow = (
+  name: string,
+  saved?: ModelPricingSnapshot,
+  draft?: ModelPricingSnapshot
+): ModelRow => ({
+  ...(saved ?? draft ?? { name, billingMode: 'per-token', hasConflict: false }),
+  saved,
+  draft,
+  isDraftChanged: getSnapshotSignature(saved) !== getSnapshotSignature(draft),
+  isDraftDeleted: Boolean(saved && !draft),
+  isDraftNew: Boolean(!saved && draft),
+})
+
+export type PriceChangeKind = 'added' | 'modified' | 'deleted'
+
+/**
+ * Classifies a draft price change.
+ * @param row Saved and draft model comparison.
+ * @returns Change kind, or null for an unchanged price.
+ */
+export const getPriceChangeKind = (row: ModelRow): PriceChangeKind | null => {
+  if (row.isDraftDeleted) return 'deleted'
+  if (row.isDraftNew) return 'added'
+  if (row.isDraftChanged) return 'modified'
+  return null
+}

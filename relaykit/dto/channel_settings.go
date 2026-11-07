@@ -271,7 +271,9 @@ func (c *ClaudeCodeSimulationConfig) Validate() error {
 }
 
 type ChannelOtherSettings struct {
-	VertexProjectID         string        `json:"vertex_project_id,omitempty"`
+	VertexProjectID string `json:"vertex_project_id,omitempty"`
+	// VertexAPIVersion selects v1 (default) or v1beta1 for Google model endpoints.
+	VertexAPIVersion        string        `json:"vertex_api_version,omitempty"`
 	AwsApiType              AwsApiType    `json:"aws_api_type,omitempty"`
 	AzureResponsesVersion   string        `json:"azure_responses_version,omitempty"`
 	VertexKeyType           VertexKeyType `json:"vertex_key_type,omitempty"` // "json" or "api_key"

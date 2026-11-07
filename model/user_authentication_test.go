@@ -165,6 +165,49 @@ func TestIncrementFailedAttemptsCountsConcurrentFailures(t *testing.T) {
 	assert.Equal(t, attempts, reloaded.FailedAttempts)
 }
 
+func TestIncrementFailedAttemptsRestartsWindowAfterLockoutExpires(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		lockedUntil     time.Duration
+		failures        int
+		wantAttempts    int
+		wantLocked      bool
+		keepLockedUntil bool
+	}{
+		{name: "first failure after expiry", lockedUntil: -time.Minute, failures: 1, wantAttempts: 1, wantLocked: false},
+		{name: "max failures after expiry", lockedUntil: -time.Minute, failures: common.MaxFailAttempts, wantAttempts: common.MaxFailAttempts, wantLocked: true},
+		{name: "failure during active lockout", lockedUntil: time.Minute, failures: 1, wantAttempts: common.MaxFailAttempts, wantLocked: true, keepLockedUntil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncateTables(t)
+
+			user := User{Username: "twofa-expiry-user", Password: "password"}
+			require.NoError(t, DB.Create(&user).Error)
+			lockedUntil := time.Now().Add(tc.lockedUntil)
+			twoFA := TwoFA{UserId: user.Id, Secret: "secret", IsEnabled: true, FailedAttempts: common.MaxFailAttempts, LockedUntil: &lockedUntil}
+			require.NoError(t, DB.Create(&twoFA).Error)
+			var stored TwoFA
+			require.NoError(t, DB.First(&stored, twoFA.Id).Error)
+
+			for range tc.failures {
+				require.NoError(t, (&TwoFA{Id: twoFA.Id}).IncrementFailedAttempts())
+			}
+
+			var reloaded TwoFA
+			require.NoError(t, DB.First(&reloaded, twoFA.Id).Error)
+			assert.Equal(t, tc.wantAttempts, reloaded.FailedAttempts)
+			assert.Equal(t, tc.wantLocked, reloaded.IsLocked())
+			if !tc.wantLocked {
+				assert.Nil(t, reloaded.LockedUntil)
+			}
+			if tc.keepLockedUntil {
+				require.NotNil(t, reloaded.LockedUntil)
+				assert.True(t, stored.LockedUntil.Equal(*reloaded.LockedUntil), "lockout must not be extended")
+			}
+		})
+	}
+}
+
 func TestValidateBackupCodeCanOnlySucceedOnce(t *testing.T) {
 	truncateTables(t)
 
@@ -344,66 +387,4 @@ func assertUserAuthVersion(t *testing.T, userID int, expected int64) {
 	var version int64
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", userID).Select("auth_version").Scan(&version).Error)
 	assert.Equal(t, expected, version)
-}
-
-func TestPurgeUsersPublishesTombstoneAndPurgesAuthenticationData(t *testing.T) {
-	truncateTables(t)
-	server := useUserCacheMiniRedis(t)
-
-	user := User{
-		Username: "hard-delete-success", Password: "password", AuthVersion: 1,
-		TelegramId: "hard-delete-success-telegram",
-	}
-	require.NoError(t, DB.Create(&user).Error)
-	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
-		return ClaimExternalIdentityWithTx(tx, ExternalIdentityProviderTelegram, user.TelegramId, user.Id)
-	}))
-	require.NoError(t, DB.Create(&Token{UserId: user.Id, Key: "hard-delete-success-token"}).Error)
-	require.NoError(t, DB.Create(&TwoFA{UserId: user.Id, Secret: "secret", IsEnabled: true}).Error)
-	require.NoError(t, DB.Create(&TwoFABackupCode{UserId: user.Id, CodeHash: "hash"}).Error)
-	require.NoError(t, DB.Create(&PasskeyCredential{UserID: user.Id, CredentialID: "credential-success", PublicKey: "public-key"}).Error)
-	require.NoError(t, DB.Create(&UserOAuthBinding{UserId: user.Id, ProviderId: 1, ProviderUserId: "provider-user-success"}).Error)
-	require.NoError(t, DB.Create(&UserSession{
-		SID: "hard-delete-success-session", UserID: user.Id, Version: 1, UserAuthVersion: 1,
-		Status: UserSessionStatusActive, RefreshHash: "refresh-hash", LoginMethod: "password",
-		LastActiveAt: 1, ExpiresAt: 2,
-	}).Error)
-	require.NoError(t, DB.Create(&AuthFlow{
-		TokenHash: "hard-delete-success-flow", Purpose: AuthFlowPurposeTwoFALogin,
-		UserId: user.Id, ExpiresAt: time.Now().Add(time.Minute),
-	}).Error)
-	require.NoError(t, populateUserCache(user))
-	_, cacheErr := GetTokenByKey("hard-delete-success-token", true)
-	require.NoError(t, cacheErr)
-	// Administrative hard deletion commonly targets an already soft-deleted
-	// user; the shared version increment must therefore query unscoped.
-	require.NoError(t, DB.Delete(&user).Error)
-
-	affected, err := PurgeSoftDeletedUsers()
-	require.NoError(t, err)
-	require.EqualValues(t, 1, affected)
-
-	var count int64
-	require.NoError(t, DB.Unscoped().Model(&User{}).Where("id = ?", user.Id).Count(&count).Error)
-	assert.Zero(t, count)
-	for _, record := range []any{
-		&Token{},
-		&TwoFA{},
-		&TwoFABackupCode{},
-		&PasskeyCredential{},
-		&UserOAuthBinding{},
-		&UserSession{},
-		&AuthFlow{},
-		&ExternalIdentityClaim{},
-	} {
-		require.NoError(t, DB.Unscoped().Model(record).Where("user_id = ?", user.Id).Count(&count).Error)
-		assert.Zero(t, count)
-	}
-	assert.False(t, server.Exists(getUserAuthFenceKey(user.Id)))
-	committed, err := common.RDB.Get(t.Context(), getUserAuthVersionKey(user.Id)).Result()
-	require.NoError(t, err)
-	assert.Equal(t, "2", committed)
-	assert.False(t, server.Exists(getUserCacheKey(user.Id)))
-	_, tokenErr := GetTokenByKey("hard-delete-success-token", false)
-	assert.ErrorIs(t, tokenErr, gorm.ErrRecordNotFound)
 }

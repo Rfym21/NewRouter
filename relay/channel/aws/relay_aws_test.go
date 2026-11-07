@@ -1007,56 +1007,52 @@ func TestMantleCanceledRequestSkipsRetry(t *testing.T) {
 	assert.True(t, relaytypes.IsSkipRetryError(apiError))
 }
 
-// Mantle's separately signed HTTP path must still honor channel-level Claude
-// request rewrites and usage accounting options, including passthrough bodies.
-func TestMantleAppliesClaudeChannelCacheSettings(t *testing.T) {
-	var received []byte
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"id":"msg_cache","type":"message","role":"assistant","model":"anthropic.claude-opus-4-7","content":[],"usage":{"input_tokens":5,"output_tokens":0,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}`)
-	}))
-	defer server.Close()
-	previousClient := http.DefaultClient
-	http.DefaultClient = server.Client()
-	t.Cleanup(func() { http.DefaultClient = previousClient })
-	info := newMantleTestInfo()
-	info.ChannelBaseUrl = server.URL
-	info.ChannelSetting.PassThroughBodyEnabled = true
-	info.ChannelOtherSettings.ForceCacheEnabled = true
-	info.ChannelOtherSettings.ForceCache1hEnabled = true
-	info.ChannelOtherSettings.Cache1hBillAs5mEnabled = true
-	info.ChannelOtherSettings.CacheReadMinRatioEnabled = true
-	info.ChannelOtherSettings.CacheReadMinRatio = 0.5
-	c := newAwsTestContext(httptest.NewRecorder(), context.Background())
-	a := &Adaptor{}
-	response, err := a.DoRequest(c, info, strings.NewReader(`{"model":"client-alias","max_tokens":128,"messages":[{"role":"user","content":"hello"}],"future_option":true}`))
-	require.NoError(t, err)
-	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyClaudeForceCacheInjected))
-	assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyClaudeCache1hAs5m))
-	assert.Equal(t, 0.5, common.GetContextKeyFloat64(c, constant.ContextKeyClaudeCacheReadMinRatio))
-	var payload struct {
-		Model    string `json:"model"`
-		Messages []struct {
-			Content []struct {
-				CacheControl struct{ Type, TTL string } `json:"cache_control"`
-			} `json:"content"`
-		} `json:"messages"`
-		FutureOption bool `json:"future_option"`
+func TestAWSApiKeyTypeInvokesThroughSDKWithBearerToken(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			info := newMantleTestInfo()
+			info.ChannelOtherSettings.AwsApiType = ""
+			info.ChannelOtherSettings.AwsKeyType = dto.AwsKeyTypeApiKey
+			info.IsStream = stream
+			info.UpstreamModelName = "claude-3-5-sonnet-20240620"
+			c := newAwsTestContext(httptest.NewRecorder(), context.Background())
+			a := &Adaptor{}
+			a.Init(info)
+
+			requestURL, err := a.GetRequestURL(info)
+			require.NoError(t, err)
+			assert.Empty(t, requestURL)
+
+			response, err := a.DoRequest(c, info, strings.NewReader(`{"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`))
+			require.NoError(t, err)
+			assert.Nil(t, response)
+			require.NotNil(t, a.AwsClient)
+
+			var seen *http.Request
+			capture := func(options *bedrockruntime.Options) {
+				options.Retryer = aws.NopRetryer{}
+				options.HTTPClient = awsHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+					seen = request
+					return nil, errors.New("captured")
+				})
+			}
+			if stream {
+				input, ok := a.AwsReq.(*bedrockruntime.InvokeModelWithResponseStreamInput)
+				require.True(t, ok)
+				_, _ = a.AwsClient.InvokeModelWithResponseStream(context.Background(), input, capture)
+			} else {
+				input, ok := a.AwsReq.(*bedrockruntime.InvokeModelInput)
+				require.True(t, ok)
+				_, _ = a.AwsClient.InvokeModel(context.Background(), input, capture)
+			}
+			require.NotNil(t, seen)
+			action := "invoke"
+			if stream {
+				action = "invoke-with-response-stream"
+			}
+			assert.Equal(t, "bedrock-runtime.us-east-1.amazonaws.com", seen.URL.Host)
+			assert.Equal(t, "/model/us."+awsTestModel+"/"+action, seen.URL.Path)
+			assert.Equal(t, "Bearer test-api-key", seen.Header.Get("Authorization"))
+		})
 	}
-	require.NoError(t, common.Unmarshal(received, &payload))
-	assert.Equal(t, "anthropic.claude-opus-4-7", payload.Model)
-	require.Len(t, payload.Messages, 1)
-	require.Len(t, payload.Messages[0].Content, 1)
-	assert.Equal(t, "ephemeral", payload.Messages[0].Content[0].CacheControl.Type)
-	assert.Equal(t, "1h", payload.Messages[0].Content[0].CacheControl.TTL)
-	assert.True(t, payload.FutureOption)
-	result, apiErr := a.DoResponse(c, response.(*http.Response), info)
-	require.Nil(t, apiErr)
-	usage := result.(*dto.Usage)
-	canonical, ok := usage.BillingUsage.CanonicalUsage()
-	require.True(t, ok)
-	assert.Equal(t, 15, canonical.PromptTokens)
-	assert.Zero(t, canonical.PromptTokensDetails.CachedTokens)
-	assert.Zero(t, canonical.PromptTokensDetails.CacheCreationTokensTotal())
 }

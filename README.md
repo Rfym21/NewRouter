@@ -4,11 +4,16 @@ https://github.com/Rfym21/WorkSpace/tree/main/Projects/NewRouter (Current)
 
 https://github.com/QuantumNous/new-api (Upstream)
 
-当前同步基准：官方 `main` 的 Commit(`45746eee4de25ab1eb75d4b7fbb8de2199483ea3`)，同步日期 2026-11-03。
+当前同步基准：官方 `main` 的 Commit(`8c8940c999c6c38031dacdd0139cf7b0e1c38308`)，同步日期 2026-11-07。
 
 最初基于 Commit(`4e570389dd433a717373ce9c9b822b59f5ed3d5d`) 二次开发。
 
-本次同步包含上次基准 `70e6af642` 之后的 3 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享、审计日志二次验证清除，以及自定义前端。
+本次同步包含上次基准 `45746eee4de25ab1eb75d4b7fbb8de2199483ea3` 之后的 14 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享、审计日志二次验证清除，以及自定义前端。
+
+- 修复用户与令牌 Redis 缓存跨槽错误，并为鉴权缓存加入完整性校验；双因素认证锁定过期后重新开始失败计数。
+- 模型价格保存前先审阅变更，并对缺失或失效的插件价格给出处理引导。
+- Gemini Embeddings 改按上游 `usageMetadata` 计费，Gemini 补 Argon 字段与 reasoning 映射；Vertex 服务账号访问令牌按过期时间缓存，并支持渠道级 `v1beta1` 端点切换。
+- AWS 移除未用的 API Key HTTP 请求路径；`gpt-image-2.6` 转发 `complexity`、`markup` 等字段；上传插件在顶层 `/v1` 路径服务；渠道创建返回 ID 与输入映射。
 
 - 修复 Grok 流式响应丢失缓存和输出 Token 明细的问题，缓存命中可按配置的缓存价格计费。
 - Gemini Omni 按输入、文本输出（含思考）、视频（含音频）Token 计费：提交时估算视频 Token，完成后按 Vertex AI 返回的实际用量结算。新的 Token 计费配置需要兼容的表达式，旧按次价格、倍率价格或依赖 `u("seconds")`、`u("resolution")` 等旧字段的表达式需要在模型价格设置中重新配置；不兼容请求会在估价、预扣和提交前拒绝，已提交任务继续按冻结的价格及用量快照结算。

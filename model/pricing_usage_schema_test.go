@@ -317,6 +317,7 @@ func TestPricingSharedPluginVariantsUseEachSchemaAndExpression(t *testing.T) {
 // model expression reads cannot charge it. Unpriced models are listed too,
 // including those whose only expression prices ordinary channels.
 func TestModelPricingIssuesFollowPluginChanges(t *testing.T) {
+	resetPricingEndpointTestTables(t)
 	require.NoError(t, DB.AutoMigrate(&Option{}))
 	saved := config.GlobalConfig.ExportAllConfigs()
 	t.Cleanup(func() {
@@ -353,6 +354,15 @@ func TestModelPricingIssuesFollowPluginChanges(t *testing.T) {
 		return slices.DeleteFunc(issues, func(issue ModelPricingIssue) bool { return !strings.HasPrefix(issue.PluginKey, "issue-") })
 	}
 
+	assert.Empty(t, ownIssues(), "no channel serves the models yet")
+	mapping := `{"ordinary-alias":"issue-ordinary"}`
+	require.NoError(t, DB.Create(&Channel{
+		Id: 940, Type: constant.ChannelTypeTaskPlugin, Key: "key-940", Status: common.ChannelStatusEnabled, Name: "channel-940",
+		Models: "ordinary-alias", ModelMapping: &mapping,
+	}).Error)
+	for _, name := range []string{"issue-priced", "issue-per-call", "Issue-Unpriced", "ordinary-alias", "issue-shared"} {
+		insertPricingEndpointAbility(t, 940, name)
+	}
 	assert.Equal(t, []ModelPricingIssue{ordinary, unpriced}, ownIssues())
 
 	_, err = jsplugin.DefaultRegistry.Register(pluginSource("issue-alpha", "Alpha", "1.1.0", `["issue-priced","issue-per-call","issue-unpriced","issue-ordinary","issue-shared"]`, seconds), jsplugin.Options{})

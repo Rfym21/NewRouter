@@ -14,26 +14,40 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"new-router/common"
+	"new-router/setting/config"
+	"new-router/setting/runtime_setting"
 )
+
+func setAnonymizationAnalyzerConfig(t *testing.T, modelDir, endpoint string) {
+	t.Helper()
+	previousDir, previousURL := runtime_setting.GetAnonymizationAnalyzerConfig()
+	update := func(directory, url string) {
+		require.NoError(t, config.UpdateConfigFromMap(config.GlobalConfig.Get("runtime_setting"), map[string]string{
+			"anonymization_local_ner_model_dir": directory,
+			"anonymization_presidio_url":        url,
+		}))
+		runtime_setting.ApplyToRuntime()
+	}
+	update(modelDir, endpoint)
+	t.Cleanup(func() { update(previousDir, previousURL) })
+}
 
 func TestAnonymizationPreviewUsesLocalModelAndFailsClosed(t *testing.T) {
 	directory := os.Getenv("ANONYMIZATION_TEST_LOCAL_MODEL_DIR")
 	if directory == "" {
 		t.Skip("ANONYMIZATION_TEST_LOCAL_MODEL_DIR is not set")
 	}
-	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", directory)
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	setAnonymizationAnalyzerConfig(t, directory, "")
 	const body = `{"rules":[],"text":"My name is \u0041lice \u004aohnson. My email address is alice.johnson@example.com."}`
 	response := performAnonymizationPreview(t, common.RoleRootUser, body, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	require.Contains(t, response.Body.String(), `"entity_type":"PERSON"`)
-	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", filepath.Join(directory, "missing-model"))
+	setAnonymizationAnalyzerConfig(t, filepath.Join(directory, "missing-model"), "")
 	response = performAnonymizationPreview(t, common.RoleRootUser, body, false)
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.NotContains(t, response.Body.String(), "\x41lice \x4aohnson")
 	require.NotContains(t, response.Body.String(), directory)
-	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", directory)
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "http://unused.invalid")
+	setAnonymizationAnalyzerConfig(t, directory, "http://unused.invalid")
 	response = performAnonymizationPreview(t, common.RoleRootUser, body, false)
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 }
@@ -56,7 +70,7 @@ func performAnonymizationPreview(t *testing.T, role int, body string, unknownLen
 }
 
 func TestAnonymizationPreviewUsesUnsavedRulesAndFreshMappings(t *testing.T) {
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	setAnonymizationAnalyzerConfig(t, "", "")
 	const body = `{"rules":[{"name":"internal host","mode":"literal","pattern":"github.com","enabled":true}],"text":"github.com alice@tenant.test"}`
 	response := performAnonymizationPreview(t, common.RoleRootUser, body, false)
 	require.Equal(t, http.StatusOK, response.Code)
@@ -87,7 +101,7 @@ func TestAnonymizationPreviewUsesUnsavedRulesAndFreshMappings(t *testing.T) {
 }
 
 func TestAnonymizationPreviewAllowsEmptyRulesAndSkipsDisabledRules(t *testing.T) {
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	setAnonymizationAnalyzerConfig(t, "", "")
 	for _, rules := range []string{`[]`, `[{"name":"off","mode":"literal","pattern":"internal-code","enabled":false}]`} {
 		response := performAnonymizationPreview(t, common.RoleRootUser, `{"rules":`+rules+`,"text":"internal-code"}`, false)
 		require.Equal(t, http.StatusOK, response.Code)
@@ -97,7 +111,7 @@ func TestAnonymizationPreviewAllowsEmptyRulesAndSkipsDisabledRules(t *testing.T)
 }
 
 func TestAnonymizationPreviewBoundsMatchRowsWithoutTruncatingTheAnonymizedText(t *testing.T) {
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	setAnonymizationAnalyzerConfig(t, "", "")
 	text := strings.Repeat("a", anonymizationPreviewMatchLimit+8)
 	response := performAnonymizationPreview(t, common.RoleRootUser, `{"rules":[{"name":"characters","mode":"literal","pattern":"a","enabled":true}],"text":"`+text+`"}`, false)
 	require.Equal(t, http.StatusOK, response.Code)
@@ -117,7 +131,7 @@ func TestAnonymizationPreviewBoundsMatchRowsWithoutTruncatingTheAnonymizedText(t
 }
 
 func TestAnonymizationPreviewRejectsInvalidInputWithoutEchoingText(t *testing.T) {
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	setAnonymizationAnalyzerConfig(t, "", "")
 	const private = "private-sensitive-value"
 	for _, body := range []string{
 		`{"rules":[],"text":"private-sensitive-value","unknown":true}`,
@@ -140,7 +154,7 @@ func TestAnonymizationPreviewRejectsInvalidInputWithoutEchoingText(t *testing.T)
 }
 
 func TestAnonymizationPreviewRejectsNonRootBeforeAnalyzing(t *testing.T) {
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "invalid")
+	setAnonymizationAnalyzerConfig(t, "", "invalid")
 	for _, role := range []int{0, common.RoleCommonUser, common.RoleAdminUser} {
 		response := performAnonymizationPreview(t, role, `{"rules":[],"text":"private-sensitive-value"}`, false)
 		assert.Equal(t, http.StatusForbidden, response.Code)
@@ -155,14 +169,14 @@ func TestAnonymizationPreviewMatchesConfiguredAnalyzerOnceAndFailsClosed(t *test
 		fmt.Fprint(w, `[{"entity_type":"PERSON","start":5,"end":22,"score":0.95}]`)
 	}))
 	defer analyzer.Close()
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", analyzer.URL)
+	setAnonymizationAnalyzerConfig(t, "", analyzer.URL)
 	response := performAnonymizationPreview(t, common.RoleRootUser, `{"rules":[],"text":"call Jane Confidential today"}`, false)
 	require.Equal(t, http.StatusOK, response.Code)
 	assert.Equal(t, 1, requests)
 	assert.Contains(t, response.Body.String(), `"text":"Jane Confidential"`)
 	assert.Contains(t, response.Body.String(), `"entity_type":"PERSON"`)
 	assert.NotContains(t, response.Body.String(), `"anonymized":"call Jane Confidential today"`)
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "invalid")
+	setAnonymizationAnalyzerConfig(t, "", "invalid")
 	response = performAnonymizationPreview(t, common.RoleRootUser, `{"rules":[],"text":"private-sensitive-value"}`, false)
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 	assert.NotContains(t, response.Body.String(), "private-sensitive-value")

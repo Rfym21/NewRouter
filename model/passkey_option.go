@@ -94,6 +94,25 @@ func validatePasskeyRPIDWithTx(tx *gorm.DB, rpID string) error {
 // including unrelated keys from UpdateOptionsBulk. Preview rolls back even the
 // initial default rows and never publishes a local configuration change.
 func UpdatePasskeyDomainOptions(values map[string]string, preview bool, confirmation string) (*PasskeyDomainChange, error) {
+	for key := range values {
+		if isAnonymizationAnalyzerOption(key) {
+			anonymizationAnalyzerOptionMutex.Lock()
+			defer anonymizationAnalyzerOptionMutex.Unlock()
+			break
+		}
+	}
+	return updatePasskeyDomainOptions(values, preview, confirmation)
+}
+
+// updatePasskeyDomainOptions requires the analyzer mutex when those fields are
+// supplied. Bulk callers acquire it before the log-range mutex to preserve order.
+func updatePasskeyDomainOptions(values map[string]string, preview bool, confirmation string) (*PasskeyDomainChange, error) {
+	analyzerOptions := make(map[string]string)
+	for key, value := range values {
+		if isAnonymizationAnalyzerOption(key) {
+			analyzerOptions[key] = value
+		}
+	}
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	values = maps.Clone(values)
@@ -104,6 +123,10 @@ func UpdatePasskeyDomainOptions(values map[string]string, preview bool, confirma
 	}
 	var change *PasskeyDomainChange
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockAnonymizationAnalyzerOptions(tx, analyzerOptions); err != nil {
+			return err
+		}
+		maps.Copy(values, analyzerOptions)
 		settings, serverAddress, err := lockPasskeyDomainSettings(tx)
 		if err != nil {
 			return err
@@ -242,11 +265,14 @@ func UpdatePasskeyDomainOptions(values map[string]string, preview bool, confirma
 	}
 	applyPasskeyDomainOptions(values)
 	for key, value := range values {
-		if !IsPasskeyDomainOption(key) {
+		if !IsPasskeyDomainOption(key) && !isAnonymizationAnalyzerOption(key) {
 			if err := updateOptionMap(key, value); err != nil {
 				return change, err
 			}
 		}
+	}
+	if err := applyAnonymizationAnalyzerOptions(analyzerOptions); err != nil {
+		return change, err
 	}
 	return change, nil
 }

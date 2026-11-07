@@ -88,6 +88,10 @@ const OPERATIONS_SECTIONS = [
             '2025-04-01-preview',
           'runtime_setting.max_file_download_mb':
             settings['runtime_setting.max_file_download_mb'] ?? 64,
+          'runtime_setting.anonymization_local_ner_model_dir':
+            settings['runtime_setting.anonymization_local_ner_model_dir'] ?? '',
+          'runtime_setting.anonymization_presidio_url':
+            settings['runtime_setting.anonymization_presidio_url'] ?? '',
           'runtime_setting.anonymization_context_ttl_seconds':
             settings['runtime_setting.anonymization_context_ttl_seconds'] ??
             3600,

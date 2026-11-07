@@ -59,14 +59,21 @@
 
 ## 可选语义识别
 
-内置识别包括凭据、IP、邮箱等格式，以及经过校验的中国大陆手机号、身份证和明确标签的姓名/地址。任意自由文本中的姓名、机构或地址可通过自定义规则或自行部署的 Presidio Analyzer 补充：
+内置识别包括凭据、IP、邮箱等格式，以及经过校验的中国大陆手机号、身份证和明确标签的姓名/地址。任意自由文本中的姓名、机构或地址可通过自定义规则、本地 AstrLink Guard 模型或自行部署的 Presidio Analyzer 补充。
+
+在 `/system-settings/operations/runtime` 的“匿名化识别器”中配置本地模型目录或 Presidio URL，两项只能填写一项。保存后持久化并对新请求热生效，两个字段均清空时使用内置检测和自定义规则。环境变量仅提供初始默认值，保存的空值也会覆盖环境变量。
+
+本地目录填写服务器或容器内的路径，需预先放入 `QuantumNous/astrlink-guard` 的 `7216b6a3b897ef903d4b1ba367ae6fb95b0fa5e4` 版本文件 `model_int8.onnx`、`model_int8.onnx_data` 和 `tokenizer.json`。加载时校验文件大小和 SHA-256。模型在进程内运行，首次使用时加载。
+
+环境变量配置示例，两种识别器选用其中一种。
 
 ```dotenv
+# ANONYMIZATION_LOCAL_NER_MODEL_DIR=/opt/models/astrlink-guard
 ANONYMIZATION_PRESIDIO_URL=http://presidio-analyzer:3000
 ANONYMIZATION_PRESIDIO_LANGUAGE=en
 ```
 
-不配置 URL 时不会调用外部识别服务。Analyzer 需要自行部署并配置对应语言模型/识别器，中文模型不会自动下载。该服务会收到待识别的文本，应配置为受信任的识别服务。超时、非法范围、超量结果或重定向会中止请求，避免将未完成识别的原文继续发给模型。
+Analyzer 需要自行部署并配置对应语言模型/识别器，中文模型不会自动下载。该服务会收到待识别的文本，应配置为受信任的识别服务。超时、非法范围、超量结果或重定向会中止请求，避免将未完成识别的原文继续发给模型。
 
 ## 处理边界
 

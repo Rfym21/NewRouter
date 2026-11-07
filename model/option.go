@@ -5,11 +5,14 @@ import (
 	"maps"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"new-router/common"
 	"new-router/constant"
+	"new-router/pkg/anonymizer"
 	"new-router/pkg/jsplugin"
 	"new-router/setting"
 	"new-router/setting/config"
@@ -23,6 +26,75 @@ import (
 type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
 	Value string `json:"value"`
+}
+
+const anonymizationModelDirOption = "runtime_setting.anonymization_local_ner_model_dir"
+const anonymizationPresidioURLOption = "runtime_setting.anonymization_presidio_url"
+
+var anonymizationAnalyzerOptionMutex sync.Mutex
+
+func isAnonymizationAnalyzerOption(key string) bool {
+	return key == anonymizationModelDirOption || key == anonymizationPresidioURLOption
+}
+
+func validateAnonymizationAnalyzerOptions(values map[string]string) error {
+	modelDir, endpoint := values[anonymizationModelDirOption], values[anonymizationPresidioURLOption]
+	if strings.TrimSpace(modelDir) != "" && strings.TrimSpace(endpoint) != "" {
+		return common.NewMessage("Configure either a local model directory or a Presidio URL")
+	}
+	if strings.TrimSpace(endpoint) != "" {
+		if _, err := anonymizer.NewPresidioDetector(endpoint, "en", nil); err != nil {
+			return common.NewMessage("Invalid Presidio analyzer URL")
+		}
+	}
+	return nil
+}
+
+// lockAnonymizationAnalyzerOptions validates against persisted values so saves
+// from separate instances cannot enable conflicting analyzers between syncs.
+func lockAnonymizationAnalyzerOptions(tx *gorm.DB, values map[string]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	common.OptionMapRWMutex.RLock()
+	rows := []Option{
+		{Key: anonymizationModelDirOption, Value: common.OptionMap[anonymizationModelDirOption]},
+		{Key: anonymizationPresidioURLOption, Value: common.OptionMap[anonymizationPresidioURLOption]},
+	}
+	common.OptionMapRWMutex.RUnlock()
+	// Seed and lock both rows in a fixed order, including SQLite's writer lock.
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+		return err
+	}
+	for i := range rows {
+		if err := lockForUpdate(tx).Where(&Option{Key: rows[i].Key}).First(&rows[i]).Error; err != nil {
+			return err
+		}
+		if _, supplied := values[rows[i].Key]; !supplied {
+			values[rows[i].Key] = rows[i].Value
+		}
+	}
+	return validateAnonymizationAnalyzerOptions(values)
+}
+
+// applyAnonymizationAnalyzerOptions publishes both fields together during saves
+// and database reloads to avoid exposing an intermediate detector selection.
+func applyAnonymizationAnalyzerOptions(values map[string]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	common.OptionMapRWMutex.Lock()
+	defer common.OptionMapRWMutex.Unlock()
+	fields := make(map[string]string, len(values))
+	for key, value := range values {
+		fields[strings.TrimPrefix(key, "runtime_setting.")] = value
+	}
+	if err := config.UpdateConfigFromMap(config.GlobalConfig.Get("runtime_setting"), fields); err != nil {
+		return err
+	}
+	maps.Copy(common.OptionMap, values)
+	runtime_setting.ApplyToRuntime()
+	return nil
 }
 
 func AllOption() ([]*Option, error) {
@@ -205,6 +277,8 @@ func InitOptionMap() {
 }
 
 func loadOptionsFromDatabase() {
+	anonymizationAnalyzerOptionMutex.Lock()
+	defer anonymizationAnalyzerOptionMutex.Unlock()
 	rangeOptions, rangeErr := migrateLogRangeOptions(nil)
 	requestPolicyOptionMutex.Lock()
 	defer requestPolicyOptionMutex.Unlock()
@@ -234,7 +308,12 @@ func loadOptionsFromDatabase() {
 		}
 	}
 	passkeyOptions := make(map[string]string)
+	analyzerOptions := make(map[string]string)
 	for _, option := range options {
+		if isAnonymizationAnalyzerOption(option.Key) {
+			analyzerOptions[option.Key] = option.Value
+			continue
+		}
 		if option.Key == "SystemName" && option.Value == "New API" {
 			// Only migrate the former built-in default so custom site names remain untouched.
 			result := DB.Model(&Option{}).
@@ -258,6 +337,9 @@ func loadOptionsFromDatabase() {
 		}
 	}
 	applyPasskeyDomainOptions(passkeyOptions)
+	if err := applyAnonymizationAnalyzerOptions(analyzerOptions); err != nil {
+		common.SysError("failed to reload anonymization analyzer settings")
+	}
 }
 
 func SyncOptions(frequency int) {
@@ -315,7 +397,7 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
-	if isLogRangeOption(key) {
+	if isLogRangeOption(key) || isAnonymizationAnalyzerOption(key) {
 		return UpdateOptionsBulk(map[string]string{key: value})
 	}
 	if IsRequestPolicyOption(key) {
@@ -354,6 +436,17 @@ func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
 	}
+	values = maps.Clone(values)
+	analyzerOptions := make(map[string]string)
+	for key, value := range values {
+		if isAnonymizationAnalyzerOption(key) {
+			analyzerOptions[key] = value
+		}
+	}
+	if len(analyzerOptions) > 0 {
+		anonymizationAnalyzerOptionMutex.Lock()
+		defer anonymizationAnalyzerOptionMutex.Unlock()
+	}
 	_, canonicalRange := values[operation_setting.LogMaxRangeDaysOptionKey]
 	_, legacyRange := values[legacyLogExportMaxDaysOptionKey]
 	if canonicalRange || legacyRange {
@@ -367,7 +460,7 @@ func UpdateOptionsBulk(values map[string]string) error {
 	}
 	for key := range values {
 		if IsPasskeyDomainOption(key) {
-			_, err := UpdatePasskeyDomainOptions(values, false, "")
+			_, err := updatePasskeyDomainOptions(values, false, "")
 			return err
 		}
 	}
@@ -397,6 +490,10 @@ func UpdateOptionsBulk(values map[string]string) error {
 	}
 
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockAnonymizationAnalyzerOptions(tx, analyzerOptions); err != nil {
+			return err
+		}
+		maps.Copy(values, analyzerOptions)
 		for k, v := range values {
 			option := Option{Key: k}
 			if err := tx.FirstOrCreate(&option, Option{Key: k}).Error; err != nil {
@@ -413,9 +510,15 @@ func UpdateOptionsBulk(values map[string]string) error {
 		return err
 	}
 	for k, v := range values {
+		if isAnonymizationAnalyzerOption(k) {
+			continue
+		}
 		if err := updateOptionMap(k, v); err != nil {
 			return err
 		}
+	}
+	if err := applyAnonymizationAnalyzerOptions(analyzerOptions); err != nil {
+		return err
 	}
 	if policySnapshot != nil {
 		requestPolicySnapshot.Store(policySnapshot)

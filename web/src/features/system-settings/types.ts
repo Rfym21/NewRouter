@@ -410,6 +410,8 @@ export type OperationsSettings = {
   'runtime_setting.search_rate_limit_duration': number
   'runtime_setting.azure_default_api_version': string
   'runtime_setting.max_file_download_mb': number
+  'runtime_setting.anonymization_local_ner_model_dir': string
+  'runtime_setting.anonymization_presidio_url': string
   'runtime_setting.anonymization_context_ttl_seconds': number
   'runtime_setting.anonymization_max_contexts': number
   'runtime_setting.force_stream_option_enabled': boolean

@@ -55,51 +55,78 @@ const optionalUrlString = z.string().refine((value) => {
   return /^https?:\/\//.test(trimmed)
 }, 'Provide a valid URL starting with http:// or https://')
 
-const runtimeSchema = z.object({
-  runtime_setting: z.object({
-    relay_timeout: z.coerce.number().min(0),
-    streaming_timeout: z.coerce.number().min(1),
-    max_request_body_mb: z.coerce.number().min(1),
-    stream_scanner_max_buffer_mb: z.coerce.number().min(1),
-    relay_max_idle_conns: z.coerce.number().min(1),
-    relay_max_idle_conns_per_host: z.coerce.number().min(1),
-    global_api_rate_limit_enabled: z.boolean(),
-    global_api_rate_limit: z.coerce.number().min(0),
-    global_api_rate_limit_duration: z.coerce.number().min(1),
-    global_web_rate_limit_enabled: z.boolean(),
-    global_web_rate_limit: z.coerce.number().min(0),
-    global_web_rate_limit_duration: z.coerce.number().min(1),
-    critical_rate_limit_enabled: z.boolean(),
-    critical_rate_limit: z.coerce.number().min(0),
-    critical_rate_limit_duration: z.coerce.number().min(1),
-    search_rate_limit_enabled: z.boolean(),
-    search_rate_limit: z.coerce.number().min(0),
-    search_rate_limit_duration: z.coerce.number().min(1),
-    azure_default_api_version: z.string(),
-    max_file_download_mb: z.coerce.number().min(1),
-    anonymization_context_ttl_seconds: z.coerce.number().min(60).max(86400),
-    anonymization_max_contexts: z.coerce.number().min(16).max(65536),
-    force_stream_option_enabled: z.boolean(),
-    count_token_enabled: z.boolean(),
-    get_media_token_enabled: z.boolean(),
-    get_media_token_not_stream_enabled: z.boolean(),
-    sync_upstream_base: optionalUrlString,
-    sync_http_timeout_seconds: z.coerce.number().min(1),
-    sync_http_retry: z.coerce.number().min(1),
-    sync_http_max_mb: z.coerce.number().min(1),
-    notify_limit_count: z.coerce.number().min(0),
-    notification_limit_duration: z.coerce.number().min(1),
-    channel_test_request_interval: z.coerce.number().min(0),
-    linux_do_token_endpoint: optionalUrlString,
-    linux_do_user_endpoint: optionalUrlString,
-    debug_enabled: z.boolean(),
-    access_log_enabled: z.boolean(),
-    error_log_enabled: z.boolean(),
-  }),
-  perf_metrics_setting: z.object({
-    enabled: z.boolean(),
-  }),
-})
+const runtimeSchema = z
+  .object({
+    runtime_setting: z.object({
+      relay_timeout: z.coerce.number().min(0),
+      streaming_timeout: z.coerce.number().min(1),
+      max_request_body_mb: z.coerce.number().min(1),
+      stream_scanner_max_buffer_mb: z.coerce.number().min(1),
+      relay_max_idle_conns: z.coerce.number().min(1),
+      relay_max_idle_conns_per_host: z.coerce.number().min(1),
+      global_api_rate_limit_enabled: z.boolean(),
+      global_api_rate_limit: z.coerce.number().min(0),
+      global_api_rate_limit_duration: z.coerce.number().min(1),
+      global_web_rate_limit_enabled: z.boolean(),
+      global_web_rate_limit: z.coerce.number().min(0),
+      global_web_rate_limit_duration: z.coerce.number().min(1),
+      critical_rate_limit_enabled: z.boolean(),
+      critical_rate_limit: z.coerce.number().min(0),
+      critical_rate_limit_duration: z.coerce.number().min(1),
+      search_rate_limit_enabled: z.boolean(),
+      search_rate_limit: z.coerce.number().min(0),
+      search_rate_limit_duration: z.coerce.number().min(1),
+      azure_default_api_version: z.string(),
+      max_file_download_mb: z.coerce.number().min(1),
+      anonymization_local_ner_model_dir: z.string(),
+      anonymization_presidio_url: z.string().refine((value) => {
+        const trimmed = value.trim()
+        if (!trimmed) return true
+        try {
+          const url = new URL(trimmed)
+          return (
+            (url.protocol === 'http:' || url.protocol === 'https:') &&
+            Boolean(url.hostname) &&
+            !/^https?:\/\/[^/]*@/.test(url.href) &&
+            !url.search &&
+            !url.hash
+          )
+        } catch {
+          return false
+        }
+      }, 'Invalid Presidio analyzer URL'),
+      anonymization_context_ttl_seconds: z.coerce.number().min(60).max(86400),
+      anonymization_max_contexts: z.coerce.number().min(16).max(65536),
+      force_stream_option_enabled: z.boolean(),
+      count_token_enabled: z.boolean(),
+      get_media_token_enabled: z.boolean(),
+      get_media_token_not_stream_enabled: z.boolean(),
+      sync_upstream_base: optionalUrlString,
+      sync_http_timeout_seconds: z.coerce.number().min(1),
+      sync_http_retry: z.coerce.number().min(1),
+      sync_http_max_mb: z.coerce.number().min(1),
+      notify_limit_count: z.coerce.number().min(0),
+      notification_limit_duration: z.coerce.number().min(1),
+      channel_test_request_interval: z.coerce.number().min(0),
+      linux_do_token_endpoint: optionalUrlString,
+      linux_do_user_endpoint: optionalUrlString,
+      debug_enabled: z.boolean(),
+      access_log_enabled: z.boolean(),
+      error_log_enabled: z.boolean(),
+    }),
+    perf_metrics_setting: z.object({
+      enabled: z.boolean(),
+    }),
+  })
+  .refine(
+    ({ runtime_setting }) =>
+      !runtime_setting.anonymization_local_ner_model_dir.trim() ||
+      !runtime_setting.anonymization_presidio_url.trim(),
+    {
+      path: ['runtime_setting', 'anonymization_presidio_url'],
+      message: 'Configure either a local model directory or a Presidio URL',
+    }
+  )
 
 type RuntimeFormInput = z.input<typeof runtimeSchema>
 type RuntimeFormValues = z.output<typeof runtimeSchema>
@@ -125,6 +152,8 @@ type FlatRuntimeDefaults = {
   'runtime_setting.search_rate_limit_duration': number
   'runtime_setting.azure_default_api_version': string
   'runtime_setting.max_file_download_mb': number
+  'runtime_setting.anonymization_local_ner_model_dir': string
+  'runtime_setting.anonymization_presidio_url': string
   'runtime_setting.anonymization_context_ttl_seconds': number
   'runtime_setting.anonymization_max_contexts': number
   'runtime_setting.force_stream_option_enabled': boolean
@@ -235,6 +264,10 @@ const buildFormDefaults = (
       defaults['runtime_setting.max_file_download_mb'],
       1
     ),
+    anonymization_local_ner_model_dir:
+      defaults['runtime_setting.anonymization_local_ner_model_dir'] ?? '',
+    anonymization_presidio_url:
+      defaults['runtime_setting.anonymization_presidio_url'] ?? '',
     anonymization_context_ttl_seconds: clampRange(
       defaults['runtime_setting.anonymization_context_ttl_seconds'],
       60,
@@ -287,6 +320,12 @@ const normalizeDefaults = (
   defaults: FlatRuntimeDefaults
 ): FlatRuntimeDefaults => ({
   ...defaults,
+  'runtime_setting.anonymization_local_ner_model_dir': (
+    defaults['runtime_setting.anonymization_local_ner_model_dir'] ?? ''
+  ).trim(),
+  'runtime_setting.anonymization_presidio_url': (
+    defaults['runtime_setting.anonymization_presidio_url'] ?? ''
+  ).trim(),
   'runtime_setting.azure_default_api_version':
     defaults['runtime_setting.azure_default_api_version'].trim(),
   'runtime_setting.sync_upstream_base':
@@ -337,6 +376,10 @@ const normalizeFormValues = (
     values.runtime_setting.azure_default_api_version.trim(),
   'runtime_setting.max_file_download_mb':
     values.runtime_setting.max_file_download_mb,
+  'runtime_setting.anonymization_local_ner_model_dir':
+    values.runtime_setting.anonymization_local_ner_model_dir.trim(),
+  'runtime_setting.anonymization_presidio_url':
+    values.runtime_setting.anonymization_presidio_url.trim(),
   'runtime_setting.anonymization_context_ttl_seconds':
     values.runtime_setting.anonymization_context_ttl_seconds,
   'runtime_setting.anonymization_max_contexts':
@@ -421,16 +464,30 @@ export function RuntimeSettingsSection({
       Object.keys(normalized) as Array<keyof FlatRuntimeDefaults>
     ).filter((key) => normalized[key] !== baselineRef.current[key])
 
+    // Single-option saves must clear the previous analyzer before enabling another.
+    const analyzerClears = updates.filter(
+      (key) =>
+        (key === 'runtime_setting.anonymization_local_ner_model_dir' ||
+          key === 'runtime_setting.anonymization_presidio_url') &&
+        normalized[key] === ''
+    )
+    const orderedUpdates = [
+      ...analyzerClears,
+      ...updates.filter((key) => !analyzerClears.includes(key)),
+    ]
+
     if (updates.length === 0) {
       toast.info(t('No changes to save'))
       return
     }
 
-    for (const key of updates) {
+    for (const key of orderedUpdates) {
       await updateOption.mutateAsync({
         key,
         value: normalized[key],
       })
+      baselineRef.current = { ...baselineRef.current, [key]: normalized[key] }
+      baselineSerializedRef.current = JSON.stringify(baselineRef.current)
     }
 
     baselineRef.current = normalized
@@ -558,6 +615,50 @@ export function RuntimeSettingsSection({
                       {...safeNumberFieldProps(field)}
                     />
                   </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div>
+            <h4 className='font-medium'>{t('Anonymization analyzer')}</h4>
+          </div>
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='runtime_setting.anonymization_local_ner_model_dir'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Local anonymization model directory')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Server or container directory containing your AstrLink Guard model files. Leave both analyzer fields empty to use built-in detection and custom rules.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='runtime_setting.anonymization_presidio_url'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Presidio analyzer URL')}</FormLabel>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'HTTP(S) address of your Presidio Analyzer. Request text is sent to this service. Configure either this URL or a local model directory.'
+                    )}
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

@@ -15,15 +15,30 @@ import (
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/setting"
+	"new-router/setting/config"
+	"new-router/setting/runtime_setting"
 )
+
+func setAnonymizationAnalyzerConfig(t *testing.T, modelDir, endpoint string) {
+	t.Helper()
+	previousDir, previousURL := runtime_setting.GetAnonymizationAnalyzerConfig()
+	update := func(directory, url string) {
+		require.NoError(t, config.UpdateConfigFromMap(config.GlobalConfig.Get("runtime_setting"), map[string]string{
+			"anonymization_local_ner_model_dir": directory,
+			"anonymization_presidio_url":        url,
+		}))
+		runtime_setting.ApplyToRuntime()
+	}
+	update(modelDir, endpoint)
+	t.Cleanup(func() { update(previousDir, previousURL) })
+}
 
 func TestLocalNERThroughRelayPreservesHistoryAndRestoresNames(t *testing.T) {
 	directory := os.Getenv("ANONYMIZATION_TEST_LOCAL_MODEL_DIR")
 	if directory == "" {
 		t.Skip("ANONYMIZATION_TEST_LOCAL_MODEL_DIR is not set")
 	}
-	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", directory)
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	setAnonymizationAnalyzerConfig(t, directory, "")
 	detector, err := setting.AnonymizationDetector()
 	require.NoError(t, err)
 	require.IsType(t, &anonymizer.LocalDetector{}, detector)
@@ -98,8 +113,7 @@ func TestAnonymizationDispatchUsesActualUpstreamFormat(t *testing.T) {
 }
 
 func TestAnonymizationContinuationDefaultFallbackThroughRelay(t *testing.T) {
-	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
-	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", "")
+	setAnonymizationAnalyzerConfig(t, "", "")
 	for _, tc := range []struct {
 		name   string
 		format types.RelayFormat

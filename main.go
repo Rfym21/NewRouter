@@ -298,6 +298,7 @@ func InitResources() error {
 	common.InitEnv()
 
 	// 以代码默认值播种运行时配置镜像的全局量;DB 持久值在 InitOptionMap 加载后热覆盖。
+	runtime_setting.InitAnonymizationAnalyzerDefaults()
 	runtime_setting.ApplyToRuntime()
 
 	logger.SetupLogger()

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"new-router/pkg/anonymizer"
+	"new-router/setting/runtime_setting"
 )
 
 const AnonymizationRulesOptionKey = "anonymization_setting.custom_rules"
@@ -44,11 +45,10 @@ var localAnonymizationAnalyzer struct {
 	detector  *anonymizer.LocalDetector
 }
 
-// The optional analyzer is explicitly configured by the server operator; it is
-// never enabled just because the anonymization switch is on.
+// AnonymizationDetector returns the optional analyzer configured by the operator.
+// Enabling anonymization alone does not select a model or external service.
 func AnonymizationDetector() (anonymizer.Detector, error) {
-	endpoint := strings.TrimSpace(os.Getenv("ANONYMIZATION_PRESIDIO_URL"))
-	modelDir := strings.TrimSpace(os.Getenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR"))
+	modelDir, endpoint := runtime_setting.GetAnonymizationAnalyzerConfig()
 	if modelDir != "" {
 		if endpoint != "" {
 			return nil, errors.New("configure one anonymization analyzer")

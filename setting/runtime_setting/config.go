@@ -1,7 +1,9 @@
 package runtime_setting
 
 import (
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"new-router/common"
@@ -13,44 +15,46 @@ import (
 // RuntimeSetting 承载可在管理端热更新的运行时配置,取代原环境变量。
 // 默认值即代码基线;持久化值经 option 表加载并通过 handleConfigUpdate 热应用。
 type RuntimeSetting struct {
-	RelayTimeout                  int    `json:"relay_timeout"`
-	StreamingTimeout              int    `json:"streaming_timeout"`
-	RelayMaxIdleConns             int    `json:"relay_max_idle_conns"`
-	RelayMaxIdleConnsPerHost      int    `json:"relay_max_idle_conns_per_host"`
-	MaxRequestBodyMB              int    `json:"max_request_body_mb"`
-	StreamScannerMaxBufferMB      int    `json:"stream_scanner_max_buffer_mb"`
-	GlobalAPIRateLimitEnabled     bool   `json:"global_api_rate_limit_enabled"`
-	GlobalAPIRateLimit            int    `json:"global_api_rate_limit"`
-	GlobalAPIRateLimitDuration    int    `json:"global_api_rate_limit_duration"`
-	GlobalWebRateLimitEnabled     bool   `json:"global_web_rate_limit_enabled"`
-	GlobalWebRateLimit            int    `json:"global_web_rate_limit"`
-	GlobalWebRateLimitDuration    int    `json:"global_web_rate_limit_duration"`
-	CriticalRateLimitEnabled      bool   `json:"critical_rate_limit_enabled"`
-	CriticalRateLimit             int    `json:"critical_rate_limit"`
-	CriticalRateLimitDuration     int    `json:"critical_rate_limit_duration"`
-	SearchRateLimitEnabled        bool   `json:"search_rate_limit_enabled"`
-	SearchRateLimit               int    `json:"search_rate_limit"`
-	SearchRateLimitDuration       int    `json:"search_rate_limit_duration"`
-	AzureDefaultAPIVersion        string `json:"azure_default_api_version"`
-	ForceStreamOptionEnabled      bool   `json:"force_stream_option_enabled"`
-	CountTokenEnabled             bool   `json:"count_token_enabled"`
-	GetMediaTokenEnabled          bool   `json:"get_media_token_enabled"`
-	GetMediaTokenNotStreamEnabled bool   `json:"get_media_token_not_stream_enabled"`
-	MaxFileDownloadMB             int    `json:"max_file_download_mb"`
-	AnonymizationContextTTLSeconds int   `json:"anonymization_context_ttl_seconds"`
-	AnonymizationMaxContexts       int   `json:"anonymization_max_contexts"`
-	ChannelTestRequestInterval    int    `json:"channel_test_request_interval"`
-	NotifyLimitCount              int    `json:"notify_limit_count"`
-	NotificationLimitDuration     int    `json:"notification_limit_duration"`
-	DebugEnabled                  bool   `json:"debug_enabled"`
-	AccessLogEnabled              bool   `json:"access_log_enabled"`
-	ErrorLogEnabled               bool   `json:"error_log_enabled"`
-	SyncUpstreamBase              string `json:"sync_upstream_base"`
-	SyncHTTPTimeoutSeconds        int    `json:"sync_http_timeout_seconds"`
-	SyncHTTPRetry                 int    `json:"sync_http_retry"`
-	SyncHTTPMaxMB                 int    `json:"sync_http_max_mb"`
-	LinuxDOTokenEndpoint          string `json:"linux_do_token_endpoint"`
-	LinuxDOUserEndpoint           string `json:"linux_do_user_endpoint"`
+	RelayTimeout                   int    `json:"relay_timeout"`
+	StreamingTimeout               int    `json:"streaming_timeout"`
+	RelayMaxIdleConns              int    `json:"relay_max_idle_conns"`
+	RelayMaxIdleConnsPerHost       int    `json:"relay_max_idle_conns_per_host"`
+	MaxRequestBodyMB               int    `json:"max_request_body_mb"`
+	StreamScannerMaxBufferMB       int    `json:"stream_scanner_max_buffer_mb"`
+	GlobalAPIRateLimitEnabled      bool   `json:"global_api_rate_limit_enabled"`
+	GlobalAPIRateLimit             int    `json:"global_api_rate_limit"`
+	GlobalAPIRateLimitDuration     int    `json:"global_api_rate_limit_duration"`
+	GlobalWebRateLimitEnabled      bool   `json:"global_web_rate_limit_enabled"`
+	GlobalWebRateLimit             int    `json:"global_web_rate_limit"`
+	GlobalWebRateLimitDuration     int    `json:"global_web_rate_limit_duration"`
+	CriticalRateLimitEnabled       bool   `json:"critical_rate_limit_enabled"`
+	CriticalRateLimit              int    `json:"critical_rate_limit"`
+	CriticalRateLimitDuration      int    `json:"critical_rate_limit_duration"`
+	SearchRateLimitEnabled         bool   `json:"search_rate_limit_enabled"`
+	SearchRateLimit                int    `json:"search_rate_limit"`
+	SearchRateLimitDuration        int    `json:"search_rate_limit_duration"`
+	AzureDefaultAPIVersion         string `json:"azure_default_api_version"`
+	ForceStreamOptionEnabled       bool   `json:"force_stream_option_enabled"`
+	CountTokenEnabled              bool   `json:"count_token_enabled"`
+	GetMediaTokenEnabled           bool   `json:"get_media_token_enabled"`
+	GetMediaTokenNotStreamEnabled  bool   `json:"get_media_token_not_stream_enabled"`
+	MaxFileDownloadMB              int    `json:"max_file_download_mb"`
+	AnonymizationContextTTLSeconds int    `json:"anonymization_context_ttl_seconds"`
+	AnonymizationMaxContexts       int    `json:"anonymization_max_contexts"`
+	AnonymizationLocalNERModelDir  string `json:"anonymization_local_ner_model_dir"`
+	AnonymizationPresidioURL       string `json:"anonymization_presidio_url"`
+	ChannelTestRequestInterval     int    `json:"channel_test_request_interval"`
+	NotifyLimitCount               int    `json:"notify_limit_count"`
+	NotificationLimitDuration      int    `json:"notification_limit_duration"`
+	DebugEnabled                   bool   `json:"debug_enabled"`
+	AccessLogEnabled               bool   `json:"access_log_enabled"`
+	ErrorLogEnabled                bool   `json:"error_log_enabled"`
+	SyncUpstreamBase               string `json:"sync_upstream_base"`
+	SyncHTTPTimeoutSeconds         int    `json:"sync_http_timeout_seconds"`
+	SyncHTTPRetry                  int    `json:"sync_http_retry"`
+	SyncHTTPMaxMB                  int    `json:"sync_http_max_mb"`
+	LinuxDOTokenEndpoint           string `json:"linux_do_token_endpoint"`
+	LinuxDOUserEndpoint            string `json:"linux_do_user_endpoint"`
 }
 
 // 默认值保持迁移前的项目行为基线(限流 360/120、访问日志开、流式缓冲 128MB 无上限)。
@@ -82,22 +86,41 @@ var runtimeSetting = RuntimeSetting{
 	// 匿名化上下文沿用环境变量作为初始默认;面板保存后热覆盖。
 	AnonymizationContextTTLSeconds: common.GetEnvOrDefault("ANONYMIZATION_CONTEXT_TTL_SECONDS", 3600),
 	AnonymizationMaxContexts:       common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXTS", 1024),
+	AnonymizationLocalNERModelDir:  strings.TrimSpace(os.Getenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR")),
+	AnonymizationPresidioURL:       strings.TrimSpace(os.Getenv("ANONYMIZATION_PRESIDIO_URL")),
 	ChannelTestRequestInterval:     0,
-	NotifyLimitCount:              2,
-	NotificationLimitDuration:     10,
-	DebugEnabled:                  false,
-	AccessLogEnabled:              true,
-	ErrorLogEnabled:               false,
-	SyncUpstreamBase:              "https://basellm.github.io/llm-metadata",
-	SyncHTTPTimeoutSeconds:        15,
-	SyncHTTPRetry:                 3,
-	SyncHTTPMaxMB:                 10,
-	LinuxDOTokenEndpoint:          "https://connect.linux.do/oauth2/token",
-	LinuxDOUserEndpoint:           "https://connect.linux.do/api/user",
+	NotifyLimitCount:               2,
+	NotificationLimitDuration:      10,
+	DebugEnabled:                   false,
+	AccessLogEnabled:               true,
+	ErrorLogEnabled:                false,
+	SyncUpstreamBase:               "https://basellm.github.io/llm-metadata",
+	SyncHTTPTimeoutSeconds:         15,
+	SyncHTTPRetry:                  3,
+	SyncHTTPMaxMB:                  10,
+	LinuxDOTokenEndpoint:           "https://connect.linux.do/oauth2/token",
+	LinuxDOUserEndpoint:            "https://connect.linux.do/api/user",
 }
+
+var anonymizationAnalyzerConfig atomic.Value
 
 func init() {
 	config.GlobalConfig.Register("runtime_setting", &runtimeSetting)
+	anonymizationAnalyzerConfig.Store([2]string{runtimeSetting.AnonymizationLocalNERModelDir, runtimeSetting.AnonymizationPresidioURL})
+}
+
+// GetAnonymizationAnalyzerConfig returns one immutable directory and endpoint
+// snapshot so requests can continue using their selected detector during updates.
+func GetAnonymizationAnalyzerConfig() (modelDir, endpoint string) {
+	values := anonymizationAnalyzerConfig.Load().([2]string)
+	return values[0], values[1]
+}
+
+// InitAnonymizationAnalyzerDefaults reads startup defaults after .env is loaded.
+// Call it before database options are loaded, so saved empty values take precedence.
+func InitAnonymizationAnalyzerDefaults() {
+	runtimeSetting.AnonymizationLocalNERModelDir = strings.TrimSpace(os.Getenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR"))
+	runtimeSetting.AnonymizationPresidioURL = strings.TrimSpace(os.Getenv("ANONYMIZATION_PRESIDIO_URL"))
 }
 
 // transportConfig 记录已应用的 HTTP 传输层参数,用于检测是否需要重建连接池。
@@ -161,6 +184,7 @@ func ApplyToRuntime() {
 	constant.NotificationLimitDurationMinute = runtimeSetting.NotificationLimitDuration
 	constant.ErrorLogEnabled = runtimeSetting.ErrorLogEnabled
 	anonymizer.SetContextStoreLimits(runtimeSetting.AnonymizationMaxContexts, runtimeSetting.AnonymizationContextTTLSeconds)
+	anonymizationAnalyzerConfig.Store([2]string{strings.TrimSpace(runtimeSetting.AnonymizationLocalNERModelDir), strings.TrimSpace(runtimeSetting.AnonymizationPresidioURL)})
 
 	current := transportConfig{
 		relayTimeout:        runtimeSetting.RelayTimeout,

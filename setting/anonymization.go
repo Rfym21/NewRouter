@@ -84,6 +84,10 @@ func AnonymizationDetector() (anonymizer.Detector, error) {
 // enabled by default. Channel settings can override this default per channel.
 var AnonymizationEnabled = false
 
+// AnonymizationStrictContextEnabled rejects continuation requests when their
+// saved mappings are unavailable. The default permits continued conversations.
+var AnonymizationStrictContextEnabled = false
+
 // AnonymizationStableSurrogates controls whether surrogates are derived
 // deterministically per user/token engagement instead of drawn fresh per
 // request. Stable surrogates keep request prefixes byte-identical across

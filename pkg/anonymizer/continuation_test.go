@@ -31,7 +31,7 @@ func isolatedContinuationStore(t *testing.T) {
 func continuationContext(user, token int) (*gin.Context, *Session) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
-	session := NewSession(fmt.Sprintf("user:%d:token:%d", user, token), nil)
+	session := NewSession(fmt.Sprintf("user:%d:token:%d", user, token), nil).WithStrictContinuation(true)
 	Attach(c, session)
 	AttachContinuation(c, user, token)
 	return c, session
@@ -159,4 +159,74 @@ func TestImportedMappingsDoNotCascadeOrShareDefaultVault(t *testing.T) {
 	assert.Equal(t, "fake-B secret", s.DeanonymizeString("fake-A fake-B"), "inserted originals are not recursively transformed")
 	assert.Empty(t, NewSession("one", nil).Snapshot())
 	assert.Error(t, s.Import([]Mapping{{Original: "another-secret", Surrogate: "fake-A", EntityType: "CUSTOM"}}))
+}
+
+func TestContinuationFallbackKeepsAvailableMappingsAfterMissingReferences(t *testing.T) {
+	isolatedContinuationStore(t)
+	c, original := continuationContext(4, 9)
+	alias := original.AnonymizeString("alice@private.example")
+	require.NoError(t, ObserveResponse(c, []byte(`{"id":"retained","object":"response","conversation":"available"}`)))
+	request := []byte(`{"previous_response_id":"unknown","input":[{"type":"item_reference","id":"missing-item"},{"type":"reasoning","encrypted_content":"missing-blob"}],"conversation":"available"}`)
+	next, session := continuationContext(4, 9)
+	session.WithStrictContinuation(false)
+	require.NoError(t, RestoreRequestContext(next, request))
+	assert.Equal(t, "alice@private.example", session.DeanonymizeString(alias))
+	assert.Len(t, session.Snapshot(), 1)
+	require.NoError(t, RestoreRequestContext(next, request), "conversions can revisit skipped references")
+	foreign, foreignSession := continuationContext(4, 10)
+	foreignSession.WithStrictContinuation(false)
+	require.NoError(t, RestoreRequestContext(foreign, request))
+	assert.Empty(t, foreignSession.Snapshot(), "fallback preserves authenticated partitions")
+}
+
+func TestExpiredContinuationFallbackInMemoryAndRedis(t *testing.T) {
+	for _, useRedis := range []bool{false, true} {
+		t.Run(fmt.Sprintf("redis=%t", useRedis), func(t *testing.T) {
+			isolatedContinuationStore(t)
+			now := time.Unix(1000, 0)
+			defaultContextStore = newContextStore(16, time.Minute, func() time.Time { return now })
+			var server *miniredis.Miniredis
+			if useRedis {
+				server = miniredis.RunT(t)
+				client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+				t.Cleanup(func() { assert.NoError(t, client.Close()) })
+				common.RedisEnabled, common.RDB = true, client
+			}
+			c, session := continuationContext(6, 7)
+			session.AnonymizeString("alice@private.example")
+			require.NoError(t, ObserveResponse(c, []byte(`{"id":"expired","object":"response"}`)))
+			now = now.Add(2 * time.Minute)
+			if server != nil {
+				server.FastForward(2 * time.Minute)
+			}
+			for _, strict := range []bool{false, true} {
+				c, session := continuationContext(6, 7)
+				session.WithStrictContinuation(strict)
+				err := RestoreRequestContext(c, []byte(`{"previous_response_id":"expired"}`))
+				if strict {
+					require.ErrorIs(t, err, ErrContinuationUnavailable)
+				} else {
+					require.NoError(t, err)
+					assert.Empty(t, session.Snapshot())
+				}
+			}
+		})
+	}
+}
+
+func TestContinuationFallbackPreservesConflictsAndCancellation(t *testing.T) {
+	isolatedContinuationStore(t)
+	first := []Mapping{{Original: "private-a", Surrogate: "same-alias", EntityType: "CUSTOM"}}
+	second := []Mapping{{Original: "private-b", Surrogate: "same-alias", EntityType: "CUSTOM"}}
+	require.NoError(t, defaultContextStore.save(context.Background(), "user:8:token:9", []string{"response:first"}, first))
+	require.NoError(t, defaultContextStore.save(context.Background(), "user:8:token:9", []string{"conversation:second"}, second))
+	c, session := continuationContext(8, 9)
+	session.WithStrictContinuation(false)
+	require.EqualError(t, RestoreRequestContext(c, []byte(`{"previous_response_id":"first","conversation":"second"}`)), "conflicting anonymization contexts")
+	c, session = continuationContext(8, 9)
+	session.WithStrictContinuation(false)
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	cancel()
+	c.Request = c.Request.WithContext(ctx)
+	require.ErrorIs(t, RestoreRequestContext(c, []byte(`{"previous_response_id":"missing"}`)), context.Canceled)
 }

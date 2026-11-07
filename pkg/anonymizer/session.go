@@ -192,6 +192,7 @@ type Session struct {
 	preflighting     bool
 	rawInput         bool
 	requestPrepared  bool
+	strictContext    bool
 	preflightMatches map[string][]preparedMatch
 	activeSurrogates map[string]struct{}
 	countReplacer    *strings.Replacer
@@ -266,6 +267,15 @@ func (s *Session) WithDetector(ctx context.Context, detector Detector) *Session 
 func (s *Session) WithStableSurrogates(enabled bool) *Session {
 	if s != nil {
 		s.vault.SetStableSurrogates(enabled)
+	}
+	return s
+}
+
+// WithStrictContinuation snapshots whether unavailable history mappings reject
+// this request. Mapping conflicts and request cancellation always return errors.
+func (s *Session) WithStrictContinuation(enabled bool) *Session {
+	if s != nil {
+		s.strictContext = enabled
 	}
 	return s
 }

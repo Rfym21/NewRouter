@@ -51,9 +51,11 @@ func anonymizerSession(c *gin.Context, info *relaycommon.RelayInfo) *anonymizer.
 	// A request-local vault imports only authenticated continuation snapshots.
 	// Responses/compact and signed histories can reuse their own mappings without
 	// sharing mutable vaults or originals with another user/token.
+	policy := model.CurrentRequestPolicy()
 	session := anonymizer.NewSession(anonymizerEngagement(info), anonymizer.NewVault()).
-		WithRules(model.CurrentRequestPolicy().AnonymizationRules).
-		WithStableSurrogates(model.CurrentRequestPolicy().Options["AnonymizationStableSurrogates"] == "true")
+		WithRules(policy.AnonymizationRules).
+		WithStableSurrogates(policy.Options["AnonymizationStableSurrogates"] == "true").
+		WithStrictContinuation(policy.Options["AnonymizationStrictContextEnabled"] == "true")
 	anonymizer.Attach(c, session)
 	anonymizer.AttachContinuation(c, info.UserId, info.TokenId)
 	return session

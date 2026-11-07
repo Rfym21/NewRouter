@@ -43,11 +43,11 @@
 
 普通请求使用独立映射。需要重放状态时，按已认证的用户和 API 令牌查找 `previous_response_id`、conversation、item_reference、密文指纹或签名。不同用户或令牌不能借助同一个上游 ID 获取其他映射；导入的映射是副本，不共享可变 Vault。
 
-带签名的 Anthropic thinking/compaction、redacted_thinking，以及签名覆盖的 Gemini part 保持原样。OpenAI 的 encrypted_content 不解密、不改写。只有经过本代理并保留对应映射的历史，才能在后续请求中继续还原；引用未知、过期或不同令牌的状态会在上游提交前被拒绝。
+带签名的 Anthropic thinking/compaction、redacted_thinking，以及签名覆盖的 Gemini part 保持原样。OpenAI 的 encrypted_content 不解密、不改写。引用未知、过期或当前令牌无法读取的映射时，默认跳过缺失引用，继续导入可用映射并匿名化当前明文，服务日志只记录跳过的引用数量。缺失的历史映射可能导致旧假名无法还原，不透明历史也无法重新检查。在 `/system-settings/request-policies/filtering` 开启“严格校验匿名化上下文”（`AnonymizationStrictContextEnabled`）后，缺失映射会在上游提交前被拒绝。开关保存后对新请求热生效，映射冲突仍会返回错误。
 
 新增规则不会改写已经生成的密文历史。需要让新规则覆盖此前历史文本时，应开始新会话并重新提交明文历史。
 
-映射默认在闲置一小时后过期，内存缓存还受引用数和 32 MiB 总数据限制。启用 Redis 后，映射通过 AES-GCM 加密保存，并绑定用户/令牌对应的缓存键。多实例使用同一 Redis 和 CRYPTO_SECRET；未显式设置 CRYPTO_SECRET 时使用 SESSION_SECRET。未启用 Redis 时，重启或切换到其他实例后，需要开始新会话。
+映射默认在闲置一小时后过期，内存缓存还受引用数和 32 MiB 总数据限制。启用 Redis 后，映射通过 AES-GCM 加密保存，并绑定用户/令牌对应的缓存键。多实例使用同一 Redis 和 CRYPTO_SECRET；未显式设置 CRYPTO_SECRET 时使用 SESSION_SECRET。未启用 Redis 时，重启或切换到其他实例后会丢失历史映射，后续请求按严格校验开关处理。
 
 闲置过期时间与引用数上限可在 `/system-settings/operations/runtime` 的“匿名化上下文缓存”中调整，保存后热生效（Redis 中已写入条目按原 TTL 自然过期）。`ANONYMIZATION_CONTEXT_TTL_SECONDS`（60～86400 秒，默认 3600）和 `ANONYMIZATION_MAX_CONTEXTS`（16～65536，默认 1024）仅作为初始默认值。一个 response、output item、密文或签名各计一个引用。单份保存的映射最多 128 KiB，超限会在请求准备阶段返回错误。
 

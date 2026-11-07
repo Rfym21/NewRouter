@@ -44,6 +44,7 @@ export type FilteringSettings = Pick<
   | 'SensitiveWords'
   | 'SensitiveErrorReturnWordsEnabled'
   | 'AnonymizationEnabled'
+  | 'AnonymizationStrictContextEnabled'
   | 'AnonymizationStableSurrogates'
 > & { 'anonymization_setting.custom_rules': string }
 export type RequestPolicySettings = RetrySettings &
@@ -75,6 +76,7 @@ export const defaultRequestPolicySettings: RequestPolicySettings = {
   CheckSensitiveOnPromptEnabled: false,
   SensitiveErrorReturnWordsEnabled: false,
   AnonymizationEnabled: false,
+  AnonymizationStrictContextEnabled: false,
   AnonymizationStableSurrogates: false,
   'anonymization_setting.custom_rules': '[]',
   SensitiveWords: '',

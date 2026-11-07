@@ -45,3 +45,31 @@ func TestCustomAnonymizationRulesPersistAndRefreshAtomically(t *testing.T) {
 	assert.Empty(t, CurrentRequestPolicy().AnonymizationRules.Detect("ProjectSecret"))
 	assert.NotEmpty(t, policy.AnonymizationRules.Detect("ProjectSecret"), "in-flight requests keep their immutable rule snapshot")
 }
+
+func TestStrictAnonymizationContextDefaultsPersistenceAndHotReload(t *testing.T) {
+	db := setupAuditToggleTest(t)
+	previous := setting.AnonymizationStrictContextEnabled
+	t.Cleanup(func() { setting.AnonymizationStrictContextEnabled = previous })
+	setting.AnonymizationStrictContextEnabled = false
+	InitOptionMap()
+	const key = "AnonymizationStrictContextEnabled"
+	assert.Equal(t, "false", CurrentRequestPolicy().Options[key])
+	for _, value := range []string{"true", "false"} {
+		require.NoError(t, UpdateOption(key, value))
+		assert.Equal(t, value, requireOptionValue(t, db, key))
+		assert.Equal(t, value, CurrentRequestPolicy().Options[key])
+		assert.Equal(t, value == "true", setting.AnonymizationStrictContextEnabled)
+		setting.AnonymizationStrictContextEnabled = value != "true"
+		InitOptionMap()
+		assert.Equal(t, value, CurrentRequestPolicy().Options[key])
+		assert.Equal(t, value == "true", setting.AnonymizationStrictContextEnabled)
+	}
+	require.NoError(t, db.Model(&Option{}).Where("key = ?", key).Update("value", "true").Error)
+	loadOptionsFromDatabase()
+	assert.Equal(t, "true", CurrentRequestPolicy().Options[key])
+	assert.True(t, setting.AnonymizationStrictContextEnabled)
+	before := CurrentRequestPolicy()
+	assert.Error(t, UpdateOption(key, "invalid"))
+	assert.Same(t, before, CurrentRequestPolicy())
+	assert.Equal(t, "true", requireOptionValue(t, db, key))
+}

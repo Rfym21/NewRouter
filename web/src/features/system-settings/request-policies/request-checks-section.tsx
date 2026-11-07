@@ -55,6 +55,7 @@ const sensitiveSchema = z.object({
   CheckSensitiveOnPromptEnabled: z.boolean(),
   SensitiveErrorReturnWordsEnabled: z.boolean(),
   AnonymizationEnabled: z.boolean(),
+  AnonymizationStrictContextEnabled: z.boolean(),
   AnonymizationStableSurrogates: z.boolean(),
   SensitiveWords: z.string().optional(),
   anonymization_setting: z.object({
@@ -259,6 +260,30 @@ export function RequestChecksSection({
                       <FormDescription>
                         {t(
                           'The same sensitive value maps to the same surrogate within each user and token, keeping upstream prompt caches effective for full-history clients such as Claude Code. Surrogates never link values across users or tokens.'
+                        )}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='AnonymizationStrictContextEnabled'
+                render={({ field }) => (
+                  <SettingsSwitchItem>
+                    <SettingsSwitchContent>
+                      <FormLabel>
+                        {t('Require anonymization context')}
+                      </FormLabel>
+                      <FormDescription>
+                        {t(
+                          'Reject requests when saved anonymization mappings are unavailable or expired. Disabled by default to allow conversations to continue. Missing mappings may leave historical surrogates unrestored. Opaque history cannot be checked again.'
                         )}
                       </FormDescription>
                     </SettingsSwitchContent>

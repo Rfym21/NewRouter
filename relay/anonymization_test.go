@@ -96,3 +96,35 @@ func TestAnonymizationDispatchUsesActualUpstreamFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestAnonymizationContinuationDefaultFallbackThroughRelay(t *testing.T) {
+	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", "")
+	for _, tc := range []struct {
+		name   string
+		format types.RelayFormat
+		body   string
+	}{
+		{"responses", types.RelayFormatOpenAIResponses, `{"previous_response_id":"unavailable-response","input":[{"type":"reasoning","encrypted_content":"opaque-history"},{"role":"user","content":"alice@private.example"}]}`},
+		{"claude", types.RelayFormatClaude, `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"old thought","signature":"unavailable-signature"}]},{"role":"user","content":"alice@private.example"}]}`},
+		{"gemini", types.RelayFormatGemini, `{"contents":[{"parts":[{"thoughtSignature":"unavailable-signature","text":"old thought"},{"text":"alice@private.example"}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			info := &relaycommon.RelayInfo{UserId: 1, TokenId: 2, RelayMode: relayconstant.RelayModeResponses, ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{AnonymizationEnabled: common.GetPointer(true)}}}
+			masked, err := anonymizeRelayRequestJSON(c, info, tc.format, []byte(tc.body))
+			require.NoError(t, err)
+			assert.NotContains(t, string(masked), "alice@private.example")
+			session := anonymizer.FromContext(c)
+			restored, err := anonymizer.DeanonymizeTextFields(masked, session)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.body, string(restored))
+			strictContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+			strictContext.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			anonymizerSession(strictContext, info).WithStrictContinuation(true)
+			_, err = anonymizeRelayRequestJSON(strictContext, info, tc.format, []byte(tc.body))
+			assert.ErrorIs(t, err, anonymizer.ErrContinuationUnavailable)
+		})
+	}
+}

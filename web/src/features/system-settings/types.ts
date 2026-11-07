@@ -441,6 +441,7 @@ export type SecuritySettings = {
   CheckSensitiveOnPromptEnabled: boolean
   SensitiveErrorReturnWordsEnabled: boolean
   AnonymizationEnabled: boolean
+  AnonymizationStrictContextEnabled: boolean
   AnonymizationStableSurrogates: boolean
   SensitiveWords: string
   'fetch_setting.enable_ssrf_protection': boolean

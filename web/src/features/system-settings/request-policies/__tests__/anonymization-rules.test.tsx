@@ -57,6 +57,7 @@ function Fixture({ rules = '[]' }: { rules?: string }) {
             CheckSensitiveOnPromptEnabled: false,
             SensitiveErrorReturnWordsEnabled: false,
             AnonymizationEnabled: false,
+            AnonymizationStrictContextEnabled: false,
             AnonymizationStableSurrogates: false,
             SensitiveWords: '',
             [rulesKey]: rules,
@@ -102,6 +103,22 @@ beforeEach(() => {
     },
   })
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
+})
+
+test('strict context defaults off and saves through the atomic policy API', async () => {
+  const user = userEvent.setup()
+  renderRules()
+  const toggle = screen.getByRole('switch', {
+    name: 'Require anonymization context',
+  })
+  expect(toggle).not.toBeChecked()
+  await user.click(toggle)
+  await user.click(screen.getByRole('button', { name: 'Save sensitive words' }))
+  await waitFor(() =>
+    expect(api.patch).toHaveBeenCalledWith('/api/option/request_policy', {
+      options: { AnonymizationStrictContextEnabled: 'true' },
+    })
+  )
 })
 
 test('current rules can be previewed without saving and then saved through the atomic policy API', async () => {

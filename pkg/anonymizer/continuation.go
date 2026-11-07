@@ -25,6 +25,7 @@ import (
 const continuationKey = "new-router.anonymizer.continuation"
 const maxSavedMappingBytes = 128 << 10
 
+// ErrContinuationUnavailable indicates that saved history mappings cannot be loaded.
 var ErrContinuationUnavailable = errors.New("anonymization context is unavailable or expired; start a new conversation")
 
 // CheckContinuationCapacity rejects oversized mapping histories during request
@@ -81,8 +82,8 @@ func opaqueReference(kind, value string) string {
 }
 
 // RestoreRequestContext imports mappings before transforming a replayed history.
-// Unknown encrypted/signed history is rejected rather than claiming to sanitize
-// text inside an opaque upstream artifact whose originals we cannot inspect.
+// Unavailable mappings are skipped unless the session requires strict continuity.
+// Opaque artifacts remain untouched and may contain aliases we can no longer restore.
 func RestoreRequestContext(c *gin.Context, data []byte) error {
 	var body map[string]any
 	if err := common.UnmarshalWithNumber(data, &body); err != nil {
@@ -118,6 +119,12 @@ func RestoreRequestContext(c *gin.Context, data []byte) error {
 	if state == nil || session == nil {
 		return ErrContinuationUnavailable
 	}
+	missing := 0
+	defer func() {
+		if missing > 0 {
+			common.SysLog(fmt.Sprintf("anonymization continuation degraded: %d unavailable context references skipped", missing))
+		}
+	}()
 	for _, ref := range refs {
 		marker := "request:" + ref
 		if state.seen[marker] {
@@ -125,6 +132,14 @@ func RestoreRequestContext(c *gin.Context, data []byte) error {
 		}
 		mappings, err := defaultContextStore.load(requestContext(c), state.scope, ref)
 		if err != nil {
+			if contextErr := requestContext(c).Err(); contextErr != nil {
+				return contextErr
+			}
+			if !session.strictContext && errors.Is(err, ErrContinuationUnavailable) {
+				state.seen[marker] = true
+				missing++
+				continue
+			}
 			return ErrContinuationUnavailable
 		}
 		if err := session.Import(mappings); err != nil {
@@ -333,7 +348,7 @@ func newContextStore(maxEntries int, ttl time.Duration, now func() time.Time) *c
 
 // clampContextLimits enforces the same bounds as the environment defaults.
 func clampContextLimits(maxEntries, ttlSeconds int) (int, time.Duration) {
-	return min(max(maxEntries, 16), 65536), time.Duration(min(max(ttlSeconds, 60), 86400))*time.Second
+	return min(max(maxEntries, 16), 65536), time.Duration(min(max(ttlSeconds, 60), 86400)) * time.Second
 }
 
 var defaultContextStore = func() *contextStore {

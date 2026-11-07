@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"new-router/common"
-	"new-router/logger"
 	"new-router/relay/channel"
 	"new-router/relay/channel/claude"
 	"new-router/relay/channel/gemini"
@@ -337,59 +336,21 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
-	if a.RequestMode != RequestModeClaude {
-		return channel.DoApiRequest(a, c, info, requestBody)
-	}
-
-	var bodyBytes []byte
-	bodyReady := false
-	if info != nil && requestBody != nil {
-		settings := info.ChannelOtherSettings
-		needRead := claude.ShouldApplyClaudeRequestBodySettings(info) ||
-			settings.ThinkingSignatureRectifierEnabled
-		if needRead {
-			b, err := service.ReadBufferedResponseBody(requestBody)
+	if a.RequestMode == RequestModeClaude && info != nil && requestBody != nil {
+		if claude.ShouldApplyClaudeRequestBodySettings(info) {
+			body, err := service.ReadBufferedResponseBody(requestBody)
 			if err != nil {
 				return nil, fmt.Errorf("read vertex claude request body failed: %w", err)
 			}
-			bodyBytes, err = claude.ApplyClaudeRequestBodySettings(c, info, b)
+			body, err = claude.ApplyClaudeRequestBodySettings(c, info, body)
 			if err != nil {
 				return nil, err
 			}
-			bodyReady = true
+			requestBody = bytes.NewReader(body)
 		}
 		claude.ApplyClaudeResponseUsageSettings(c, info)
 	}
-
-	if bodyReady {
-		requestBody = bytes.NewBuffer(bodyBytes)
-	}
-
-	resp, err := channel.DoApiRequest(a, c, info, requestBody)
-	if err != nil {
-		return resp, err
-	}
-
-	if info == nil || !info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled || !bodyReady {
-		return resp, nil
-	}
-	if resp == nil || resp.StatusCode < http.StatusBadRequest {
-		return resp, nil
-	}
-
-	rectified, retryErr := claude.RectifyThinkingSignatureHTTP(c, bodyBytes, resp,
-		claude.RectifyOptions{RequireSignatureError: false},
-		func(stripped []byte) (*http.Response, error) {
-			return channel.DoApiRequest(a, c, info, bytes.NewBuffer(stripped))
-		})
-	if retryErr != nil {
-		logger.LogWarn(c, "vertex claude thinking signature rectifier abort: "+retryErr.Error())
-		return resp, nil
-	}
-	if rectified != nil {
-		return rectified, nil
-	}
-	return resp, nil
+	return channel.DoApiRequest(a, c, info, requestBody)
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {

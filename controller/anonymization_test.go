@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,28 @@ import (
 	"github.com/stretchr/testify/require"
 	"new-router/common"
 )
+
+func TestAnonymizationPreviewUsesLocalModelAndFailsClosed(t *testing.T) {
+	directory := os.Getenv("ANONYMIZATION_TEST_LOCAL_MODEL_DIR")
+	if directory == "" {
+		t.Skip("ANONYMIZATION_TEST_LOCAL_MODEL_DIR is not set")
+	}
+	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", directory)
+	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	const body = `{"rules":[],"text":"My name is \u0041lice \u004aohnson. My email address is alice.johnson@example.com."}`
+	response := performAnonymizationPreview(t, common.RoleRootUser, body, false)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), `"entity_type":"PERSON"`)
+	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", filepath.Join(directory, "missing-model"))
+	response = performAnonymizationPreview(t, common.RoleRootUser, body, false)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.NotContains(t, response.Body.String(), "\x41lice \x4aohnson")
+	require.NotContains(t, response.Body.String(), directory)
+	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", directory)
+	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "http://unused.invalid")
+	response = performAnonymizationPreview(t, common.RoleRootUser, body, false)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+}
 
 func performAnonymizationPreview(t *testing.T, role int, body string, unknownLength bool) *httptest.ResponseRecorder {
 	t.Helper()

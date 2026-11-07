@@ -26,6 +26,7 @@ Transitive dependencies should be audited before a final external release.
 | backend  | production  | Go        | `github.com/aws/smithy-go`                              | `v1.24.2`                            | Apache-2.0              |
 | backend  | production  | Go        | `github.com/bytedance/gopkg`                            | `v0.1.3`                             | Apache-2.0              |
 | backend  | production  | Go        | `github.com/casbin/casbin/v2`                           | `v2.135.0`                           | Apache-2.0              |
+| backend  | production  | Go        | `github.com/clipperhouse/uax29/v2`                      | `v2.5.0`                             | MIT                     |
 | backend  | production  | Go        | `github.com/coreos/go-oidc/v3`                          | `v3.21.0`                            | Apache-2.0              |
 | backend  | production  | Go        | `github.com/expr-lang/expr`                             | `v1.17.8`                            | MIT                     |
 | backend  | production  | Go        | `github.com/fxamacker/cbor/v2`                          | `v2.9.0`                             | MIT                     |
@@ -168,6 +169,21 @@ Transitive dependencies should be audited before a final external release.
 | electron | development | npm       | `cross-env`                                             | `7.0.3`                              | MIT                     |
 | electron | development | npm       | `electron`                                              | `41.10.6`                            | MIT                     |
 | electron | development | npm       | `electron-builder`                                      | `26.15.3`                            | MIT                     |
+
+## Local NER source attribution
+
+The CPU inference implementation in `pkg/anonymizer/internal/guard` is adapted
+from `github.com/yetone/magpie/internal/pii/guard` at commit
+`05f6fd423bc5bb6f1f957a3728f29c34f7ccab53`.
+Copyright (c) 2026 yetone. Licensed under MIT, whose terms are reproduced below.
+
+The tokenizer uses `github.com/clipperhouse/uax29/v2` v2.5.0,
+Copyright (c) 2020 Matt Sherman, and its dependency
+`github.com/clipperhouse/stringish` v0.1.1,
+Copyright (c) 2025 Matt Sherman. Both are licensed under MIT.
+
+The optional AstrLink Guard model assets are licensed under Apache-2.0 and
+identified by the fixed revision and SHA-256 values in `detector_local.go`.
 
 ## License Texts
 

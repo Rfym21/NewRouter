@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -19,9 +20,74 @@ import (
 	relaycommon "new-router/relay/common"
 	relayconstant "new-router/relay/constant"
 	"new-router/relaykit/dto"
+	"new-router/relaykit/relayconvert"
 	"new-router/relaykit/types"
 	"new-router/service"
 )
+
+func TestCompatibleChannelsRepairFinalResponsesBody(t *testing.T) {
+	service.InitHttpClient()
+	for _, channelType := range []int{constant.ChannelTypeCodex, constant.ChannelTypeAdvancedCustom, constant.ChannelTypeSub2API, constant.ChannelTypeNewAPI} {
+		t.Run(constant.ChannelTypeNames[channelType], func(t *testing.T) {
+			var calls atomic.Int32
+			bodies := make(chan []byte, 3)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				bodies <- body
+				switch calls.Add(1) {
+				case 1:
+					w.WriteHeader(http.StatusBadRequest)
+					io.WriteString(w, `{"error":{"code":"invalid_encrypted_content"}}`)
+				case 2:
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					io.WriteString(w, `{"error":{"message":"image input is not supported"}}`)
+				default:
+					io.WriteString(w, `{"ok":true}`)
+				}
+			}))
+			defer upstream.Close()
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType: channelType, ChannelBaseUrl: upstream.URL,
+					ApiKey:         `{"access_token":"local-test","account_id":"local-account"}`,
+					ChannelSetting: dto.ChannelSettings{ImageFallbackEnabled: true},
+					ChannelOtherSettings: dto.ChannelOtherSettings{
+						ResponsesEncryptedContentRectifierEnabled: true,
+					},
+				},
+				RequestURLPath: "/v1/responses", RelayMode: relayconstant.RelayModeResponses,
+				RelayFormat: types.RelayFormatOpenAIResponses,
+			}
+			if channelType == constant.ChannelTypeAdvancedCustom {
+				info.ChannelOtherSettings.AdvancedCustom = &dto.AdvancedCustomConfig{
+					Routes: []dto.AdvancedCustomRoute{{IncomingPath: "/v1/responses", UpstreamPath: "/v1/responses", Converter: relayconvert.ConverterNone}},
+				}
+			}
+			apiType, ok := common.ChannelType2APIType(channelType)
+			require.True(t, ok)
+			adaptor := relay.GetAdaptor(apiType)
+			require.NotNil(t, adaptor)
+			adaptor.Init(info)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Request.Header.Set("Content-Type", "application/json")
+			payload := `{"input":[{"type":"reasoning","encrypted_content":"old"},{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]}]}`
+			result, err := adaptor.DoRequest(c, info, strings.NewReader(payload))
+			require.NoError(t, err)
+			response := result.(*http.Response)
+			defer response.Body.Close()
+			require.Equal(t, http.StatusOK, response.StatusCode)
+			require.EqualValues(t, 3, calls.Load())
+			require.Equal(t, payload, string(<-bodies))
+			require.JSONEq(t, `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]}]}`, string(<-bodies))
+			require.JSONEq(t, `{"input":[{"role":"user","content":[{"type":"input_text","text":"[Unsupported Image]"}]}]}`, string(<-bodies))
+		})
+	}
+}
 
 func TestSGLangChannelProtocols(t *testing.T) {
 	apiType, ok := common.ChannelType2APIType(constant.ChannelTypeSGLang)

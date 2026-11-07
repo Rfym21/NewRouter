@@ -326,6 +326,7 @@ const SENSITIVE_FORM_FIELDS = [
   'tls_insecure_skip_verify',
   'pass_through_body_enabled',
   'responses_websocket_enabled',
+  'image_fallback_enabled',
   'system_prompt',
   'system_prompt_override',
   'empty_response_no_billing_mode',
@@ -2022,6 +2023,87 @@ export function ChannelMutateDrawer({
     />
   )
 
+  const imageFallbackFields = (
+    <FormField
+      control={form.control}
+      name='image_fallback_enabled'
+      render={({ field }) => (
+        <FormItem className='flex items-center justify-between gap-4 px-4 py-3'>
+          <div className='min-w-0 space-y-0.5'>
+            <FormLabel>{t('Image request fallback')}</FormLabel>
+            <FormDescription>
+              {t(
+                'When the upstream rejects images, replace them with text placeholders and retry. Supports /v1/chat/completions, /v1/responses and /v1/messages.'
+              )}
+            </FormDescription>
+          </div>
+          <FormControl>
+            <Switch
+              disabled={sensitiveLocked}
+              checked={field.value}
+              onCheckedChange={field.onChange}
+            />
+          </FormControl>
+        </FormItem>
+      )}
+    />
+  )
+
+  const rectifierFields = (
+    <>
+      <FormField
+        control={form.control}
+        name='thinking_signature_rectifier_enabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-4 px-4 py-3'>
+            <div className='min-w-0 space-y-0.5'>
+              <FormLabel className='text-sm'>
+                {t('Auto Strip & Retry on Thinking Signature Error')}
+              </FormLabel>
+              <FormDescription>
+                {t(
+                  'On a matching thinking signature error (400 or 422), convert thinking to text and retry once while preserving tool calls and results.'
+                )}
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                disabled={sensitiveLocked}
+                checked={field.value}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
+        control={form.control}
+        name='responses_encrypted_content_rectifier_enabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-4 px-4 py-3'>
+            <div className='min-w-0 space-y-0.5'>
+              <FormLabel className='text-sm'>
+                {t('Auto Strip & Retry on Responses Encrypted Content Error')}
+              </FormLabel>
+              <FormDescription>
+                {t(
+                  'For Responses upstreams on any channel, remove rejected encrypted reasoning and retry once on a matching 400 or 422 error while preserving tool calls and results.'
+                )}
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                disabled={sensitiveLocked}
+                checked={field.value}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+    </>
+  )
+
   const taskPollingFields = (
     <FormField
       control={form.control}
@@ -3453,31 +3535,6 @@ export function ChannelMutateDrawer({
                   )}
                 />
               )}
-
-              <FormField
-                control={form.control}
-                name='thinking_signature_rectifier_enabled'
-                render={({ field }) => (
-                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                    <div className='space-y-0.5'>
-                      <FormLabel className='text-sm'>
-                        {t('Auto Strip & Retry on Thinking Signature Error')}
-                      </FormLabel>
-                      <FormDescription>
-                        {t(
-                          'On upstream 4xx, strip thinking blocks and retry the request'
-                        )}
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
             </div>
           </fieldset>
         </div>
@@ -3802,40 +3859,6 @@ export function ChannelMutateDrawer({
                   </>
                 )}
               </div>
-            </div>
-          </>
-        )}
-
-        {(currentType === 1 || currentType === 3) && (
-          <>
-            <Separator />
-            <div className='divide-border space-y-0 divide-y border-y'>
-              <FormField
-                control={form.control}
-                name='responses_encrypted_content_rectifier_enabled'
-                render={({ field }) => (
-                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                    <div className='space-y-0.5'>
-                      <FormLabel className='text-sm'>
-                        {t(
-                          'Auto Strip & Retry on Responses Encrypted Content Error'
-                        )}
-                      </FormLabel>
-                      <FormDescription>
-                        {t(
-                          'On OpenAI/Azure Responses 4xx, strip encrypted reasoning items and replay once'
-                        )}
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
             </div>
           </>
         )}
@@ -5507,6 +5530,8 @@ export function ChannelMutateDrawer({
                 {formatFields}
                 {ollamaOpenAIChatFields}
                 {thinkingFields}
+                {imageFallbackFields}
+                {rectifierFields}
                 {passthroughFields}
                 {systemPromptFields}
                 {systemPromptOverrideFields}

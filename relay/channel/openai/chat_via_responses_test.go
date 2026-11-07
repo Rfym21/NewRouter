@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"new-router/common"
 	"new-router/constant"
+	"new-router/relay/channel/requestrepair"
 	relaycommon "new-router/relay/common"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/relayconvert"
@@ -332,4 +333,54 @@ func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {
 		require.NotEqualf(t, -1, idx, "missing %q after byte offset %d", part, offset)
 		offset += idx + len(part)
 	}
+}
+
+func TestEncryptedReasoningRepairPreservesConversationAndTools(t *testing.T) {
+	body := []byte(`{"input":[{"type":"reasoning","id":"rs_1","encrypted_content":"old"},{"type":"message","role":"user","content":"question"},{"type":"function_call","call_id":"call_1","name":"calculate","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"done"}]}`)
+	patched, changed := requestrepair.RepairThinking(body, []byte(`{"error":{"code":"invalid_encrypted_content"}}`), false, true)
+	require.True(t, changed)
+	assert.JSONEq(t, `{"input":[{"type":"message","role":"user","content":"question"},{"type":"function_call","call_id":"call_1","name":"calculate","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"done"}]}`, string(patched))
+	_, changed = requestrepair.RepairThinking(body, []byte(`invalid_encrypted_content`), true, false)
+	assert.False(t, changed)
+	_, changed = requestrepair.RepairThinking(body, []byte(`This API key was created under a different organization`), false, true)
+	assert.False(t, changed)
+	_, changed = requestrepair.RepairThinking(body, []byte(`{"error":{"message":"invalid request"},"request":{"reasoning":"invalid_encrypted_content"}}`), false, true)
+	assert.False(t, changed)
+	_, changed = requestrepair.RepairThinking(body, []byte(`{"error":{"message":"invalid thinking signature for encrypted_content"}}`), true, true)
+	assert.True(t, changed)
+}
+
+func TestEncryptedReasoningRepairAvoidsEmptyInput(t *testing.T) {
+	body := []byte(`{"input":[{"type":"reasoning","encrypted_content":"old"}]}`)
+	patched, changed := StripEncryptedReasoning(body)
+	assert.False(t, changed)
+	assert.Equal(t, body, patched)
+}
+
+func TestEncryptedReasoningRepairRemovesForeignResourceIDs(t *testing.T) {
+	body := []byte(`{"input":[{"type":"reasoning","id":"rs_foreign"},{"type":"reasoning","id":"rs_encrypted","encrypted_content":"old"},{"type":"message","id":"msg_foreign","role":"user","content":"question"},{"type":"function_call","id":"fc_foreign","call_id":"call_1","name":"calculate","arguments":"{\"id\":\"business-id\",\"number\":9007199254740993}"},{"type":"function_call_output","id":"fco_foreign","call_id":"call_1","output":"done"},{"type":"item_reference","id":"msg_reference"}]}`)
+	const expected = `{"input":[{"type":"message","role":"user","content":"question"},{"type":"function_call","call_id":"call_1","name":"calculate","arguments":"{\"id\":\"business-id\",\"number\":9007199254740993}"},{"type":"function_call_output","call_id":"call_1","output":"done"},{"type":"item_reference","id":"msg_reference"}]}`
+	for _, message := range []string{
+		`The requested item was created under a different Azure OpenAI resource. Use the same resource that created the item to access it.`,
+		`This item was created under a different account.`,
+	} {
+		t.Run(message, func(t *testing.T) {
+			patched, changed := requestrepair.RepairThinking(body, []byte(message), false, true)
+			require.True(t, changed)
+			assert.JSONEq(t, expected, string(patched))
+			_, changed = requestrepair.RepairThinking(patched, []byte(message), false, true)
+			assert.False(t, changed)
+		})
+	}
+	_, changed := requestrepair.RepairThinking(body, []byte(`The requested item was created under a different Azure OpenAI resource`), false, false)
+	assert.False(t, changed)
+}
+
+func TestEncryptedReasoningRepairPreservesIDsForOtherRejections(t *testing.T) {
+	body := []byte(`{"input":[{"type":"reasoning","encrypted_content":"old"},{"type":"message","id":"msg_local","role":"user","content":"hello"}]}`)
+	patched, changed := requestrepair.RepairThinking(body, []byte(`invalid_encrypted_content`), false, true)
+	require.True(t, changed)
+	assert.JSONEq(t, `{"input":[{"type":"message","id":"msg_local","role":"user","content":"hello"}]}`, string(patched))
+	_, changed = requestrepair.RepairThinking([]byte(`{"input":[{"type":"reasoning","id":"rs_foreign"}]}`), []byte(`created under a different Azure OpenAI resource`), false, true)
+	assert.False(t, changed)
 }

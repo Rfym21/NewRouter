@@ -87,6 +87,7 @@ export interface ChannelSettings {
   proxy?: string
   pass_through_body_enabled?: boolean
   responses_websocket_enabled?: boolean
+  image_fallback_enabled?: boolean
   system_prompt?: string
   system_prompt_override?: boolean
   empty_response_no_billing_enabled?: boolean

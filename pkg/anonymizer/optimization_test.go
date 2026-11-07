@@ -3,12 +3,14 @@ package anonymizer
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
 	"regexp/syntax"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode"
@@ -198,6 +200,142 @@ type changingDetector struct{ calls int }
 func (d *changingDetector) Detect(_ context.Context, text string) ([]Match, error) {
 	d.calls++
 	return []Match{{Text: text[:5], Start: 0, End: 5, EntityType: "PERSON"}}, nil
+}
+
+type historyTestDetector struct {
+	fingerprint [32]byte
+	calls       atomic.Int32
+	find        func(context.Context, string) ([]Match, error)
+}
+
+// Fingerprint identifies the model configuration used by history tests.
+func (d *historyTestDetector) Fingerprint() [32]byte { return d.fingerprint }
+
+// Detect counts inference calls independently of the shared span cache.
+func (d *historyTestDetector) Detect(ctx context.Context, text string) ([]Match, error) {
+	d.calls.Add(1)
+	return d.find(ctx, text)
+}
+
+func TestDetectionHistoryIsStableAndScoped(t *testing.T) {
+	previous := historyDetectionCache
+	historyDetectionCache = newDetectionCache(64, 1<<20, time.Minute)
+	t.Cleanup(func() { historyDetectionCache = previous })
+	const text = "alice met boris"
+	start := 0
+	detector := &historyTestDetector{fingerprint: sha256.Sum256([]byte("model-v1"))}
+	detector.find = func(_ context.Context, text string) ([]Match, error) {
+		return []Match{{Text: text[start : start+5], Start: start, End: start + 5, EntityType: "PERSON"}}, nil
+	}
+	makeSession := func(tenant, route string, stable bool) *Session {
+		return NewSession(tenant, nil).WithStableSurrogates(stable).
+			WithDetector(context.Background(), detector).WithDetectionHistory(route)
+	}
+	first := makeSession("tenant-one", "channel-one:model-one", true)
+	masked := first.AnonymizeString(text)
+	require.NoError(t, first.Err())
+	require.NotContains(t, masked, "alice")
+	start = 10
+	replay := makeSession("tenant-one", "channel-one:model-one", true)
+	require.Equal(t, masked, replay.AnonymizeString(text))
+	require.Equal(t, text, replay.DeanonymizeString(masked))
+	require.EqualValues(t, 1, detector.calls.Load())
+	for _, scope := range []struct{ tenant, route string }{
+		{"tenant-two", "channel-one:model-one"},
+		{"tenant-one", "channel-two:model-one"},
+		{"tenant-one", "channel-one:model-two"},
+	} {
+		session := makeSession(scope.tenant, scope.route, true)
+		output := session.AnonymizeString(text)
+		require.NoError(t, session.Err())
+		require.Contains(t, output, "alice")
+		require.NotContains(t, output, "boris")
+	}
+	require.EqualValues(t, 4, detector.calls.Load())
+	detector.fingerprint = sha256.Sum256([]byte("model-v2"))
+	changedModel := makeSession("tenant-one", "channel-one:model-one", true)
+	require.NotContains(t, changedModel.AnonymizeString(text), "boris")
+	require.EqualValues(t, 5, detector.calls.Load())
+	rules, err := CompileRules([]Rule{{Name: "verb", Mode: "literal", Pattern: "met", Enabled: true}})
+	require.NoError(t, err)
+	changedRules := makeSession("tenant-one", "channel-one:model-one", true).WithRules(rules)
+	require.NotContains(t, changedRules.AnonymizeString(text), "met")
+	require.EqualValues(t, 6, detector.calls.Load())
+	for range 2 {
+		random := makeSession("tenant-one", "channel-one:model-one", false)
+		random.AnonymizeString(text)
+		require.NoError(t, random.Err())
+	}
+	require.EqualValues(t, 8, detector.calls.Load(), "random aliases must keep fresh detector behavior")
+	for _, element := range historyDetectionCache.entries {
+		entry := element.Value.(*detectionCacheEntry)
+		for _, span := range entry.matches {
+			require.Equal(t, "PERSON", span.entityType)
+			require.Empty(t, span.ruleName)
+		}
+	}
+}
+
+func TestDetectionHistoryRejectsFailuresAndDeduplicatesConcurrentInference(t *testing.T) {
+	previous := historyDetectionCache
+	historyDetectionCache = newDetectionCache(64, 1<<20, time.Minute)
+	t.Cleanup(func() { historyDetectionCache = previous })
+	detector := &historyTestDetector{fingerprint: sha256.Sum256([]byte("model"))}
+	detector.find = func(context.Context, string) ([]Match, error) { return nil, errors.New("unavailable") }
+	makeSession := func() *Session {
+		return NewSession("history-concurrency", nil).WithStableSurrogates(true).
+			WithDetector(context.Background(), detector).WithDetectionHistory("route")
+	}
+	failed := makeSession()
+	failed.AnonymizeString("alice")
+	require.Error(t, failed.Err())
+	require.Empty(t, historyDetectionCache.entries)
+	detector.find = func(context.Context, string) ([]Match, error) {
+		return []Match{{Text: "wrong", Start: 0, End: 5, EntityType: "PERSON"}}, nil
+	}
+	invalid := makeSession()
+	invalid.AnonymizeString("alice")
+	require.Error(t, invalid.Err())
+	require.Empty(t, historyDetectionCache.entries)
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	detector.find = func(ctx context.Context, text string) ([]Match, error) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-finish:
+			return []Match{{Text: text, Start: 0, End: len(text), EntityType: "PERSON"}}, nil
+		}
+	}
+	outputs := make(chan string, 8)
+	errors := make(chan error, 8)
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Go(func() {
+			session := makeSession()
+			outputs <- session.AnonymizeString("alice")
+			errors <- session.Err()
+		})
+	}
+	<-started
+	close(finish)
+	workers.Wait()
+	var expected string
+	for range 8 {
+		require.NoError(t, <-errors)
+		output := <-outputs
+		if expected == "" {
+			expected = output
+		}
+		require.Equal(t, expected, output)
+	}
+	require.EqualValues(t, 3, detector.calls.Load())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceled := makeSession().WithDetector(ctx, detector)
+	canceled.AnonymizeString("alice")
+	require.Error(t, canceled.Err(), "even a cached result must honor cancellation")
 }
 
 func TestHistoryDetectionCachePreservesRequestSemantics(t *testing.T) {

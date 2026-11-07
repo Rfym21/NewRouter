@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1054,5 +1055,227 @@ func TestAWSApiKeyTypeInvokesThroughSDKWithBearerToken(t *testing.T) {
 			assert.Equal(t, "/model/us."+awsTestModel+"/"+action, seen.URL.Path)
 			assert.Equal(t, "Bearer test-api-key", seen.Header.Get("Authorization"))
 		})
+	}
+}
+
+func TestAwsThinkingRepairPreservesToolsAndReturnsLatestError(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, test := range []struct {
+			name       string
+			status     int
+			message    string
+			wantCalls  int
+			wantStatus int
+		}{
+			{name: "signature", status: 400, message: "Invalid signature in thinking block", wantCalls: 2, wantStatus: 429},
+			{name: "unrelated validation", status: 400, message: "invalid max_tokens", wantCalls: 1, wantStatus: 400},
+			{name: "authentication", status: 403, message: "Invalid signature in thinking block", wantCalls: 1, wantStatus: 403},
+			{name: "server failure", status: 500, message: "Invalid signature in thinking block", wantCalls: 1, wantStatus: 500},
+		} {
+			t.Run(fmt.Sprintf("stream=%t/%s", stream, test.name), func(t *testing.T) {
+				calls := 0
+				client := newAwsTestClient(awsHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+					calls++
+					body, err := io.ReadAll(request.Body)
+					require.NoError(t, err)
+					status, message, errorType := test.status, test.message, "ValidationException"
+					if calls == 2 {
+						assert.NotContains(t, string(body), `"thinking"`)
+						assert.Contains(t, string(body), `"tool_use"`)
+						assert.Contains(t, string(body), `"tool_result"`)
+						status, message, errorType = 429, "rate limit after repair", "ThrottlingException"
+					}
+					encoded, err := json.Marshal(map[string]string{"message": message})
+					require.NoError(t, err)
+					return &http.Response{
+						StatusCode: status,
+						Header:     http.Header{"Content-Type": {"application/json"}, "X-Amzn-Errortype": {errorType}},
+						Body:       io.NopCloser(bytes.NewReader(encoded)), Request: request,
+					}, nil
+				}))
+				const body = `{"thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"old"},{"type":"tool_use","id":"call_1","name":"run","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"done"}]}]}`
+				info := newAwsTestRelayInfo()
+				info.IsStream = stream
+				info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled = true
+				adaptor := &Adaptor{AwsClient: client}
+				c := newAwsTestContext(httptest.NewRecorder(), context.Background())
+				var apiErr *relaytypes.NewAPIError
+				if stream {
+					request := newAwsStreamInput()
+					request.Body = []byte(body)
+					adaptor.AwsReq = request
+					apiErr, _ = awsStreamHandler(c, info, adaptor)
+				} else {
+					request := newAwsInvokeModelInput()
+					request.Body = []byte(body)
+					adaptor.AwsReq = request
+					apiErr, _ = awsHandler(c, info, adaptor)
+				}
+				require.NotNil(t, apiErr)
+				assert.Equal(t, test.wantStatus, apiErr.StatusCode)
+				assert.Equal(t, test.wantCalls, calls)
+			})
+		}
+	}
+}
+
+func TestAwsSDKCombinesImageAndThinkingRepairs(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, imageFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%t/imageFirst=%t", stream, imageFirst), func(t *testing.T) {
+				calls := 0
+				client := newAwsTestClient(awsHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+					calls++
+					body, err := io.ReadAll(request.Body)
+					require.NoError(t, err)
+					status, errorType := 400, "ValidationException"
+					message := "Invalid signature in thinking block"
+					if (calls == 1 && imageFirst) || (calls == 2 && !imageFirst) {
+						message = "This model does not support image input"
+					}
+					if calls >= 2 {
+						assert.Contains(t, string(body), `"tool_use"`)
+						assert.Contains(t, string(body), `"tool_result"`)
+					}
+					if calls == 3 {
+						assert.NotContains(t, string(body), `"thinking"`)
+						assert.NotContains(t, string(body), `"data":"image-data"`)
+						assert.Contains(t, string(body), "[Unsupported Image]")
+						status, message, errorType = 429, "rate limit after repairs", "ThrottlingException"
+					}
+					encoded, err := json.Marshal(map[string]string{"message": message})
+					require.NoError(t, err)
+					return &http.Response{
+						StatusCode: status,
+						Header:     http.Header{"Content-Type": {"application/json"}, "X-Amzn-Errortype": {errorType}},
+						Body:       io.NopCloser(bytes.NewReader(encoded)), Request: request,
+					}, nil
+				}))
+				const body = `{"thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"old"},{"type":"tool_use","id":"call_1","name":"run","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"image","source":{"type":"base64","data":"image-data","media_type":"image/png"}}]}]}]}`
+				info := newAwsTestRelayInfo()
+				info.IsStream = stream
+				info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled = true
+				info.ChannelSetting.ImageFallbackEnabled = true
+				adaptor := &Adaptor{AwsClient: client}
+				c := newAwsTestContext(httptest.NewRecorder(), context.Background())
+				var apiErr *relaytypes.NewAPIError
+				if stream {
+					request := newAwsStreamInput()
+					request.Body = []byte(body)
+					adaptor.AwsReq = request
+					apiErr, _ = awsStreamHandler(c, info, adaptor)
+					assert.Equal(t, body, string(request.Body))
+				} else {
+					request := newAwsInvokeModelInput()
+					request.Body = []byte(body)
+					adaptor.AwsReq = request
+					apiErr, _ = awsHandler(c, info, adaptor)
+					assert.Equal(t, body, string(request.Body))
+				}
+				require.NotNil(t, apiErr)
+				assert.Equal(t, 429, apiErr.StatusCode)
+				assert.Equal(t, 3, calls)
+			})
+		}
+	}
+}
+
+func TestMantleResignsThinkingAndImageRepairPayloads(t *testing.T) {
+	for _, http2 := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("HTTP2=%t/stream=%t", http2, stream), func(t *testing.T) {
+				type receivedRequest struct {
+					request *http.Request
+					body    []byte
+					err     error
+				}
+				received := make(chan receivedRequest, 4)
+				var calls atomic.Int32
+				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					received <- receivedRequest{request: r.Clone(context.Background()), body: body, err: err}
+					w.Header().Set("Content-Type", "application/json")
+					switch calls.Add(1) {
+					case 1:
+						w.WriteHeader(http.StatusBadRequest)
+						fmt.Fprint(w, `{"error":{"message":"Invalid signature in thinking block"}}`)
+					case 2:
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						fmt.Fprint(w, `{"error":{"message":"This model does not support image input"}}`)
+					default:
+						fmt.Fprint(w, `{"ok":true}`)
+					}
+				}))
+				server.EnableHTTP2 = http2
+				server.StartTLS()
+				defer server.Close()
+				originalClient := http.DefaultClient
+				http.DefaultClient = server.Client()
+				defer func() { http.DefaultClient = originalClient }()
+
+				info := newMantleTestInfo()
+				info.ChannelBaseUrl = server.URL
+				info.ApiKey = "access-key|secret-key|us-east-1"
+				info.IsStream = stream
+				info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled = true
+				info.ChannelSetting.ImageFallbackEnabled = true
+				info.UseRuntimeHeadersOverride = true
+				info.RuntimeHeadersOverride = map[string]any{"Connection": "keep-alive", "anthropic-beta": "test-beta", "X-Test": "repair-signing"}
+				c := newAwsTestContext(httptest.NewRecorder(), context.Background())
+				const body = `{"max_tokens":128,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"old"},{"type":"tool_use","id":"call_1","name":"run","input":{"number":9007199254740993}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"image","source":{"type":"base64","data":"image-data","media_type":"image/png"}}]}]}]}`
+				response, err := (&Adaptor{}).DoRequest(c, info, strings.NewReader(body))
+				require.NoError(t, err)
+				httpResponse, ok := response.(*http.Response)
+				require.True(t, ok)
+				defer httpResponse.Body.Close()
+				require.Equal(t, http.StatusOK, httpResponse.StatusCode)
+				result, err := io.ReadAll(httpResponse.Body)
+				require.NoError(t, err)
+				require.JSONEq(t, `{"ok":true}`, string(result))
+				require.EqualValues(t, 3, calls.Load())
+				for attempt := 1; attempt <= 3; attempt++ {
+					wire := <-received
+					require.NoError(t, wire.err)
+					assert.Equal(t, int64(len(wire.body)), wire.request.ContentLength)
+					assert.Equal(t, "test-beta", wire.request.Header.Get("anthropic-beta"))
+					assert.Equal(t, "repair-signing", wire.request.Header.Get("X-Test"))
+					assert.Contains(t, string(wire.body), `"type":"tool_use"`)
+					assert.Contains(t, string(wire.body), `"type":"tool_result"`)
+					assert.Contains(t, string(wire.body), "9007199254740993")
+					if attempt == 1 {
+						assert.Contains(t, string(wire.body), `"type":"thinking"`)
+					} else {
+						assert.NotContains(t, string(wire.body), `"type":"thinking"`)
+					}
+					if attempt < 3 {
+						assert.Contains(t, string(wire.body), "image-data")
+					} else {
+						assert.NotContains(t, string(wire.body), "image-data")
+						assert.Contains(t, string(wire.body), "[Unsupported Image]")
+					}
+					// Verify each signature against the actual headers and repaired bytes on the wire.
+					authorization := wire.request.Header.Get("Authorization")
+					_, signedHeaders, found := strings.Cut(authorization, "SignedHeaders=")
+					require.True(t, found)
+					signedHeaders, _, found = strings.Cut(signedHeaders, ",")
+					require.True(t, found)
+					verification := wire.request.Clone(context.Background())
+					verification.URL.Scheme = "https"
+					verification.URL.Host = wire.request.Host
+					verification.Header = make(http.Header)
+					for name := range strings.SplitSeq(signedHeaders, ";") {
+						if values, ok := wire.request.Header[http.CanonicalHeaderKey(name)]; ok {
+							verification.Header[http.CanonicalHeaderKey(name)] = values
+						}
+					}
+					signedAt, err := time.Parse("20060102T150405Z", wire.request.Header.Get("X-Amz-Date"))
+					require.NoError(t, err)
+					hash := sha256.Sum256(wire.body)
+					err = v4.NewSigner().SignHTTP(context.Background(), aws.Credentials{AccessKeyID: "access-key", SecretAccessKey: "secret-key"}, verification, hex.EncodeToString(hash[:]), "bedrock-mantle", "us-east-1", signedAt)
+					require.NoError(t, err)
+					assert.Equal(t, authorization, verification.Header.Get("Authorization"), "attempt %d must sign its repaired body", attempt)
+				}
+			})
+		}
 	}
 }

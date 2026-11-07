@@ -8,7 +8,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/pkg/errors"
-	"new-router/logger"
 	"new-router/relay/channel"
 	"new-router/relay/channel/claude"
 	relaycommon "new-router/relay/common"
@@ -148,7 +147,9 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 			if err != nil {
 				return nil, err
 			}
-			resp, err := channel.DoRequest(c, req, info)
+			resp, err := channel.DoRequestWithBodyRebuilder(c, req, info, func(repaired []byte) (*http.Request, error) {
+				return a.newMantleRequest(c, info, bytes.NewReader(repaired))
+			})
 			if err != nil {
 				return nil, newAwsInvokeError(c.Request.Context(), err, "Mantle Messages")
 			}
@@ -165,41 +166,18 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 		claude.ApplyClaudeResponseUsageSettings(c, info)
 	}
 
-	needsBodyRewrite := info != nil && claude.ShouldApplyClaudeRequestBodySettings(info)
-	needsRectifier := info != nil && info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled
-	if requestBody == nil || a.IsNova || (!needsBodyRewrite && !needsRectifier) {
-		return sendRequest(requestBody)
+	if requestBody != nil && !a.IsNova && claude.ShouldApplyClaudeRequestBodySettings(info) {
+		body, err := service.ReadBufferedResponseBody(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("read aws claude request body failed: %w", err)
+		}
+		body, err = claude.ApplyClaudeRequestBodySettings(c, info, body)
+		if err != nil {
+			return nil, err
+		}
+		requestBody = bytes.NewReader(body)
 	}
-
-	bodyBytes, err := service.ReadBufferedResponseBody(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("read aws claude request body failed: %w", err)
-	}
-	bodyBytes, err = claude.ApplyClaudeRequestBodySettings(c, info, bodyBytes)
-	if err != nil {
-		return nil, err
-	}
-	if !needsRectifier {
-		return sendRequest(bytes.NewBuffer(bodyBytes))
-	}
-
-	resp, err := sendRequest(bytes.NewBuffer(bodyBytes))
-	if err != nil || resp == nil || resp.StatusCode < http.StatusBadRequest {
-		return resp, err
-	}
-	rectified, retryErr := claude.RectifyThinkingSignatureHTTP(c, bodyBytes, resp,
-		claude.RectifyOptions{RequireSignatureError: false},
-		func(stripped []byte) (*http.Response, error) {
-			return sendRequest(bytes.NewBuffer(stripped))
-		})
-	if retryErr != nil {
-		logger.LogWarn(c, "aws claude signature rectifier abort: "+retryErr.Error())
-		return resp, nil
-	}
-	if rectified != nil {
-		return rectified, nil
-	}
-	return resp, nil
+	return sendRequest(requestBody)
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {

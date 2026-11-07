@@ -15,6 +15,7 @@ import (
 	"new-router/pkg/anonymizer"
 	"new-router/relay/channel"
 	"new-router/relay/channel/claude"
+	"new-router/relay/channel/requestrepair"
 	relaycommon "new-router/relay/common"
 	"new-router/relay/helper"
 	"new-router/relaykit/dto"
@@ -248,18 +249,7 @@ func getAwsModelID(requestModel string) string {
 	return requestModel
 }
 
-// awsThinkingStripStages 按 thinking-only → thinking+tools 顺序定义 AKSK 模式的剥离阶段，
-// 复用原生 Claude 的剥离实现；仅读不写，可安全作为包级只读值。
-var awsThinkingStripStages = []struct {
-	name string
-	fn   func([]byte) ([]byte, bool)
-}{
-	{claude.StripStageThinkingOnly, claude.StripThinkingFromClaudeRequest},
-	{claude.StripStageThinkingAndTools, claude.StripSignatureSensitiveBlocksFromClaudeRequest},
-}
-
-// tryRectifyAwsInvoke 对 AKSK 模式非流式 InvokeModel 的 4xx 错误做两阶段 thinking 剥离重试。
-// 仅在开关开启且原始错误状态码 >= 400 时尝试；成功返回 (响应, true)，否则 (nil, false)。
+// tryRectifyAwsInvoke repairs rejected message history with one retry per repair kind.
 func tryRectifyAwsInvoke(
 	ctx context.Context,
 	c *gin.Context,
@@ -267,36 +257,31 @@ func tryRectifyAwsInvoke(
 	a *Adaptor,
 	awsReq *bedrockruntime.InvokeModelInput,
 	origErr error,
-) (*bedrockruntime.InvokeModelOutput, bool) {
-	if info == nil || !info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled {
-		return nil, false
-	}
-	if getAwsErrorStatusCode(origErr) < http.StatusBadRequest {
-		return nil, false
-	}
-	for _, stage := range awsThinkingStripStages {
-		stripped, changed := stage.fn(awsReq.Body)
-		if !changed {
-			continue
+) (*bedrockruntime.InvokeModelOutput, error) {
+	body, currentErr := awsReq.Body, origErr
+	thinkingTried, imageTried := false, false
+	for {
+		repaired, kind, err := repairAwsRejectedBody(body, currentErr, info, thinkingTried, imageTried)
+		if err != nil {
+			return nil, err
 		}
-		logger.LogDebug(c, "aws claude thinking signature rectifier retry stage=%s", stage.name)
-		retryReq := &bedrockruntime.InvokeModelInput{
-			ModelId:     awsReq.ModelId,
-			Accept:      awsReq.Accept,
-			ContentType: awsReq.ContentType,
-			Body:        stripped,
+		if kind == "" {
+			return nil, currentErr
 		}
-		resp, err := a.AwsClient.InvokeModel(ctx, retryReq)
-		if err == nil {
-			return resp, true
+		thinkingTried = thinkingTried || kind == "thinking"
+		imageTried = imageTried || kind == "image"
+		logger.LogDebug(c, "aws message request repair retry: %s", kind)
+		retryReq := *awsReq
+		retryReq.Body = repaired
+		response, retryErr := a.AwsClient.InvokeModel(ctx, &retryReq)
+		if retryErr == nil {
+			return response, nil
 		}
-		logger.LogWarn(c, fmt.Sprintf("aws claude rectifier stage=%s still error: %s", stage.name, err.Error()))
+		body, currentErr = repaired, retryErr
 	}
-	return nil, false
 }
 
-// tryRectifyAwsInvokeStream 对 AKSK 模式流式 InvokeModelWithResponseStream 的 4xx 错误做两阶段剥离重试。
-// 4xx 在建流阶段即返回，重试发生在流消费之前，故安全。
+// tryRectifyAwsInvokeStream repairs rejected history before the stream starts.
 func tryRectifyAwsInvokeStream(
 	ctx context.Context,
 	c *gin.Context,
@@ -304,32 +289,52 @@ func tryRectifyAwsInvokeStream(
 	a *Adaptor,
 	awsReq *bedrockruntime.InvokeModelWithResponseStreamInput,
 	origErr error,
-) (*bedrockruntime.InvokeModelWithResponseStreamOutput, bool) {
-	if info == nil || !info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled {
-		return nil, false
-	}
-	if getAwsErrorStatusCode(origErr) < http.StatusBadRequest {
-		return nil, false
-	}
-	for _, stage := range awsThinkingStripStages {
-		stripped, changed := stage.fn(awsReq.Body)
-		if !changed {
-			continue
+) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error) {
+	body, currentErr := awsReq.Body, origErr
+	thinkingTried, imageTried := false, false
+	for {
+		repaired, kind, err := repairAwsRejectedBody(body, currentErr, info, thinkingTried, imageTried)
+		if err != nil {
+			return nil, err
 		}
-		logger.LogDebug(c, "aws claude thinking signature rectifier retry stage=%s", stage.name)
-		retryReq := &bedrockruntime.InvokeModelWithResponseStreamInput{
-			ModelId:     awsReq.ModelId,
-			Accept:      awsReq.Accept,
-			ContentType: awsReq.ContentType,
-			Body:        stripped,
+		if kind == "" {
+			return nil, currentErr
 		}
-		resp, err := a.AwsClient.InvokeModelWithResponseStream(ctx, retryReq)
-		if err == nil {
-			return resp, true
+		thinkingTried = thinkingTried || kind == "thinking"
+		imageTried = imageTried || kind == "image"
+		logger.LogDebug(c, "aws message request repair retry: %s", kind)
+		retryReq := *awsReq
+		retryReq.Body = repaired
+		response, retryErr := a.AwsClient.InvokeModelWithResponseStream(ctx, &retryReq)
+		if retryErr == nil {
+			return response, nil
 		}
-		logger.LogWarn(c, fmt.Sprintf("aws claude rectifier stage=%s still error: %s", stage.name, err.Error()))
+		body, currentErr = repaired, retryErr
 	}
-	return nil, false
+}
+
+func repairAwsRejectedBody(body []byte, rejection error, info *relaycommon.RelayInfo, thinkingTried, imageTried bool) ([]byte, string, error) {
+	if info == nil {
+		return body, "", nil
+	}
+	status := getAwsErrorStatusCode(rejection)
+	errorBody := []byte(rejection.Error())
+	if !thinkingTried && info.ChannelOtherSettings.ThinkingSignatureRectifierEnabled &&
+		(status == http.StatusBadRequest || status == http.StatusUnprocessableEntity) {
+		if repaired, changed := requestrepair.RepairThinking(body, errorBody, true, false); changed {
+			return repaired, "thinking", nil
+		}
+	}
+	if !imageTried && info.ChannelSetting.ImageFallbackEnabled {
+		repaired, changed, err := requestrepair.RepairImages(body, status, errorBody)
+		if err != nil {
+			return nil, "", fmt.Errorf("repair aws image request: %w", err)
+		}
+		if changed {
+			return repaired, "image", nil
+		}
+	}
+	return body, "", nil
 }
 
 func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
@@ -341,11 +346,10 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 	awsReq := a.AwsReq.(*bedrockruntime.InvokeModelInput)
 	awsResp, err := a.AwsClient.InvokeModel(ctx, awsReq)
 	if err != nil {
-		retryResp, ok := tryRectifyAwsInvoke(requestContext, c, info, a, awsReq, err)
-		if !ok {
+		awsResp, err = tryRectifyAwsInvoke(ctx, c, info, a, awsReq, err)
+		if err != nil {
 			return newAwsInvokeError(requestContext, err, "InvokeModel"), nil
 		}
-		awsResp = retryResp
 	}
 
 	claudeInfo := &claude.ClaudeResponseInfo{
@@ -376,11 +380,10 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 	awsReq := a.AwsReq.(*bedrockruntime.InvokeModelWithResponseStreamInput)
 	awsResp, err := a.AwsClient.InvokeModelWithResponseStream(ctx, awsReq)
 	if err != nil {
-		retryResp, ok := tryRectifyAwsInvokeStream(requestContext, c, info, a, awsReq, err)
-		if !ok {
+		awsResp, err = tryRectifyAwsInvokeStream(ctx, c, info, a, awsReq, err)
+		if err != nil {
 			return newAwsInvokeError(requestContext, err, "InvokeModelWithResponseStream"), nil
 		}
-		awsResp = retryResp
 	}
 	stream := awsResp.GetStream()
 	defer stream.Close()

@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"new-router/pkg/anonymizer"
@@ -36,10 +38,38 @@ func ParseAnonymizationRules(value string) (*anonymizer.RuleSet, error) {
 
 var anonymizationAnalyzerClient = &http.Client{Timeout: 3 * time.Second}
 
+var localAnonymizationAnalyzer struct {
+	sync.Mutex
+	directory string
+	detector  *anonymizer.LocalDetector
+}
+
 // The optional analyzer is explicitly configured by the server operator; it is
 // never enabled just because the anonymization switch is on.
 func AnonymizationDetector() (anonymizer.Detector, error) {
 	endpoint := strings.TrimSpace(os.Getenv("ANONYMIZATION_PRESIDIO_URL"))
+	modelDir := strings.TrimSpace(os.Getenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR"))
+	if modelDir != "" {
+		if endpoint != "" {
+			return nil, errors.New("configure one anonymization analyzer")
+		}
+		directory, err := filepath.Abs(modelDir)
+		if err != nil {
+			return nil, errors.New("invalid anonymization model directory")
+		}
+		localAnonymizationAnalyzer.Lock()
+		defer localAnonymizationAnalyzer.Unlock()
+		if localAnonymizationAnalyzer.detector != nil && localAnonymizationAnalyzer.directory == directory {
+			return localAnonymizationAnalyzer.detector, nil
+		}
+		detector, err := anonymizer.NewLocalDetector(directory)
+		if err != nil {
+			return nil, errors.New("local anonymization model unavailable")
+		}
+		localAnonymizationAnalyzer.directory = directory
+		localAnonymizationAnalyzer.detector = detector
+		return detector, nil
+	}
 	if endpoint == "" {
 		return nil, nil
 	}

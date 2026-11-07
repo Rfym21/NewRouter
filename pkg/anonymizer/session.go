@@ -187,6 +187,8 @@ type Session struct {
 	rules            *RuleSet
 	err              error
 	analysis         map[string][]Match
+	historyScope     [32]byte
+	historyEnabled   bool
 	preflighting     bool
 	rawInput         bool
 	requestPrepared  bool
@@ -247,6 +249,11 @@ func (s *Session) WithDetector(ctx context.Context, detector Detector) *Session 
 	if s != nil {
 		if ctx != nil {
 			s.ctx = ctx
+		}
+		oldFingerprint, oldKnown := detectorFingerprint(s.detector)
+		newFingerprint, newKnown := detectorFingerprint(detector)
+		if oldFingerprint != newFingerprint || oldKnown != newKnown {
+			s.analysis = nil
 		}
 		s.detector = detector
 	}
@@ -443,7 +450,7 @@ func (s *Session) detectedMatches(text string, raw bool) []preparedMatch {
 		extra, cached := s.analysis[text]
 		if !cached {
 			var err error
-			extra, err = s.detector.Detect(s.ctx, text)
+			extra, err = s.detectorMatches(text)
 			if err != nil {
 				s.err = errors.New("anonymization detector unavailable")
 				return nil

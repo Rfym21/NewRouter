@@ -758,78 +758,9 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 		return channel.DoFormRequest(a, c, info, requestBody)
 	} else if info.RelayMode == relayconstant.RelayModeRealtime {
 		return channel.DoWssRequest(a, c, info, requestBody)
-	} else if a.shouldRectifyEncryptedContent(info) {
-		return a.doResponsesRequestWithEncryptedRectifier(c, info, requestBody)
 	} else {
 		return channel.DoApiRequest(a, c, info, requestBody)
 	}
-}
-
-// shouldRectifyEncryptedContent reports whether the channel-level Responses
-// encrypted-content rectifier applies to this request (Responses endpoints only).
-func (a *Adaptor) shouldRectifyEncryptedContent(info *relaycommon.RelayInfo) bool {
-	if info == nil || !info.ChannelOtherSettings.ResponsesEncryptedContentRectifierEnabled {
-		return false
-	}
-	return info.RelayMode == relayconstant.RelayModeResponses ||
-		info.RelayMode == relayconstant.RelayModeResponsesCompact
-}
-
-// doResponsesRequestWithEncryptedRectifier issues the Responses request and, when the
-// upstream rejects it with an encrypted-content verification error (reasoning items
-// created under a different account/resource), strips those reasoning items from the
-// input array and replays the request once. A nil/original response is returned when
-// the rectifier does not apply or the retry fails, so the caller sees the original error.
-func (a *Adaptor) doResponsesRequestWithEncryptedRectifier(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
-	bodyBytes, err := service.ReadBufferedResponseBody(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("read responses request body failed: %w", err)
-	}
-
-	httpResp, err := channel.DoApiRequest(a, c, info, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return httpResp, err
-	}
-	if httpResp == nil || httpResp.StatusCode < http.StatusBadRequest {
-		return httpResp, nil
-	}
-
-	respBody, readErr := service.ReadBufferedResponseBody(httpResp.Body)
-	_ = httpResp.Body.Close()
-	if readErr != nil {
-		// Body state is unknown; hand the original response back to the caller.
-		httpResp.Body = io.NopCloser(bytes.NewBuffer(respBody))
-		return httpResp, nil
-	}
-	// Restore body so the caller can consume the original error response if retry is skipped.
-	httpResp.Body = io.NopCloser(bytes.NewBuffer(respBody))
-
-	if !IsEncryptedContentError(respBody) {
-		return httpResp, nil
-	}
-	stripped, changed := StripEncryptedReasoning(bodyBytes)
-	if !changed {
-		return httpResp, nil
-	}
-
-	logger.LogDebug(c, "responses encrypted-content rectifier: stripping reasoning items and retrying")
-	retryHTTP, retryErr := channel.DoApiRequest(a, c, info, bytes.NewBuffer(stripped))
-	if retryErr != nil {
-		logger.LogWarn(c, "responses encrypted-content rectifier retry failed: "+retryErr.Error())
-		return httpResp, nil
-	}
-	if retryHTTP == nil {
-		return httpResp, nil
-	}
-	if retryHTTP.StatusCode < http.StatusBadRequest {
-		_ = httpResp.Body.Close()
-		return retryHTTP, nil
-	}
-	// Retry still failed → drain and fall back to the original error response.
-	_, _ = service.ReadBufferedResponseBody(retryHTTP.Body)
-	_ = retryHTTP.Body.Close()
-	logger.LogWarn(c, fmt.Sprintf("responses encrypted-content rectifier retry still error, status=%d", retryHTTP.StatusCode))
-	return httpResp, nil
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {

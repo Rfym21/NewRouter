@@ -2,6 +2,7 @@ package relay
 
 import (
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -13,7 +14,54 @@ import (
 	relayconstant "new-router/relay/constant"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
+	"new-router/setting"
 )
+
+func TestLocalNERThroughRelayPreservesHistoryAndRestoresNames(t *testing.T) {
+	directory := os.Getenv("ANONYMIZATION_TEST_LOCAL_MODEL_DIR")
+	if directory == "" {
+		t.Skip("ANONYMIZATION_TEST_LOCAL_MODEL_DIR is not set")
+	}
+	t.Setenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR", directory)
+	t.Setenv("ANONYMIZATION_PRESIDIO_URL", "")
+	detector, err := setting.AnonymizationDetector()
+	require.NoError(t, err)
+	require.IsType(t, &anonymizer.LocalDetector{}, detector)
+	again, err := setting.AnonymizationDetector()
+	require.NoError(t, err)
+	require.Same(t, detector, again, "model weights must be reused across requests")
+	const name = "\x41lice \x4aohnson"
+	const payload = `{"messages":[{"role":"user","content":"My name is \u0041lice \u004aohnson. My email address is alice.johnson@example.com."}]}`
+	var first string
+	for range 2 {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		info := &relaycommon.RelayInfo{
+			UserId: 98765, TokenId: 43210, RelayMode: relayconstant.RelayModeChatCompletions,
+			ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelId: 43210, UpstreamModelName: "local-ner-test",
+				ChannelSetting: dto.ChannelSettings{AnonymizationEnabled: common.GetPointer(true)},
+			},
+		}
+		session := anonymizerSession(c, info).WithStableSurrogates(true)
+		masked, err := anonymizeRelayRequestJSON(c, info, types.RelayFormatOpenAI, []byte(payload))
+		require.NoError(t, err)
+		require.NotContains(t, string(masked), name)
+		require.NotContains(t, string(masked), "alice.johnson@example.com")
+		var foundName bool
+		for _, mapping := range session.Snapshot() {
+			foundName = foundName || mapping.EntityType == "PERSON" && mapping.Original == name
+		}
+		require.True(t, foundName, "the configured local model must contribute PERSON spans")
+		restored, err := anonymizer.DeanonymizeTextFields(masked, session)
+		require.NoError(t, err)
+		require.JSONEq(t, payload, string(restored))
+		if first == "" {
+			first = string(masked)
+		}
+		require.Equal(t, first, string(masked))
+	}
+}
 
 func TestAnonymizationDispatchUsesActualUpstreamFormat(t *testing.T) {
 	for _, tc := range []struct {

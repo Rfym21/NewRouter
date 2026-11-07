@@ -24,6 +24,8 @@ type ChannelSettings struct {
 	ResponsesWebSocketEnabled bool   `json:"responses_websocket_enabled,omitempty"`
 	SystemPrompt              string `json:"system_prompt,omitempty"`
 	SystemPromptOverride      bool   `json:"system_prompt_override,omitempty"`
+	// ImageFallbackEnabled retries rejected image requests with text placeholders.
+	ImageFallbackEnabled bool `json:"image_fallback_enabled,omitempty"`
 	// TaskExtendPluginKeys lists the task plugins a New API channel (type 60)
 	// is extended with. The upstream gateway may host many plugins, so the
 	// channel serves every listed plugin's models while the request still pins
@@ -320,10 +322,8 @@ type ChannelOtherSettings struct {
 	CacheReadMinRatioEnabled bool `json:"cache_read_min_ratio_enabled,omitempty"`
 	// CacheReadMinRatio 缓存读 token 占 (读+写) 的最低比例，取值 0-1。仅当 CacheReadMinRatioEnabled 且本字段 > 0 时生效。
 	CacheReadMinRatio float64 `json:"cache_read_min_ratio,omitempty"`
-	// ThinkingSignatureRectifierEnabled 渠道级 thinking signature 自动剥离重试开关，对以 Claude 为上游的渠道生效
-	// （原生 Anthropic、Vertex Claude、AWS Claude 的 ApiKey 与 AKSK 模式）。
-	// 开启后：上游返回 >= 400 时顺序尝试两个剥离阶段并重发，直到成功或两阶段均失败。触发条件因渠道而异：
-	// 原生 Anthropic 额外要求响应体命中 signature 特征；Vertex 与 AWS 仅以状态码 >= 400 为触发条件。
+	// ThinkingSignatureRectifierEnabled retries matching Claude signature errors (400 or 422)
+	// once after converting thinking to text, preserving tool calls and results on every channel.
 	ThinkingSignatureRectifierEnabled bool `json:"thinking_signature_rectifier_enabled,omitempty"`
 	// ClaudeCodeSimulationEnabled 渠道级 Claude Code 请求模拟开关，对 Claude 上游生效。
 	// 开启后为请求体补齐 metadata.user_id、system 前缀和默认工具定义；原生 Anthropic 追加完整模拟请求头，
@@ -331,9 +331,8 @@ type ChannelOtherSettings struct {
 	ClaudeCodeSimulationEnabled bool `json:"claude_code_simulation_enabled,omitempty"`
 	// ClaudeCodeSimulation customizes simulated headers, metadata, and system blocks. Nil fields use defaults.
 	ClaudeCodeSimulation *ClaudeCodeSimulationConfig `json:"claude_code_simulation,omitempty"`
-	// ResponsesEncryptedContentRectifierEnabled 渠道级 Responses 加密推理内容自动剥离重试开关，
-	// 对以 OpenAI / Azure 为上游的 Responses API 渠道生效。开启后：仅当上游返回 >= 400 且响应体命中加密内容错误特征时，
-	// 剥离 input 中带 encrypted_content 的 reasoning item 后原参重放一次；成功则改用重试响应，失败则回退原始错误。
+	// ResponsesEncryptedContentRectifierEnabled retries matching encrypted-reasoning errors
+	// (400 or 422) once for Responses upstreams on every channel, preserving tool calls and results.
 	ResponsesEncryptedContentRectifierEnabled bool `json:"responses_encrypted_content_rectifier_enabled,omitempty"`
 	// OllamaOpenAIChat routes Ollama chat completions to the OpenAI-compatible
 	// /v1/chat/completions endpoint. When unset, chat completions keep using

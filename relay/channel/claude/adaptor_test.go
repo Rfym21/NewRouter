@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"new-router/common"
+	"new-router/relay/channel/requestrepair"
 	relaycommon "new-router/relay/common"
 	"new-router/relay/helper"
 	"new-router/relaykit/dto"
@@ -330,4 +331,65 @@ func TestConvertGeminiRequestThinkingConfigUsesReasoningIntent(t *testing.T) {
 func TestConvertGeminiRequestNilRequest(t *testing.T) {
 	_, err := (&Adaptor{}).ConvertGeminiRequest(nil, geminiToClaudeInfo(), nil)
 	require.Error(t, err)
+}
+
+func TestThinkingRepairPreservesToolsAndAvoidsEmptyMessages(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"old"},{"type":"tool_use","id":"call_1","name":"calculate","input":{"value":9007199254740993}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"result"}]},{"role":"assistant","content":[{"type":"redacted_thinking","data":"old"}]}]}`)
+	patched, changed := requestrepair.RepairThinking(body, []byte(`{"error":{"message":"Invalid signature in thinking block"}}`), true, false)
+	require.True(t, changed)
+	assert.JSONEq(t, `{"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"text","text":"plan"},{"type":"tool_use","id":"call_1","name":"calculate","input":{"value":9007199254740993}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"result"}]},{"role":"assistant","content":[{"type":"text","text":"[Thinking omitted]"}]}]}`, string(patched))
+	_, changed = requestrepair.RepairThinking(patched, []byte(`Invalid signature in thinking block`), true, false)
+	assert.False(t, changed)
+}
+
+func TestThinkingRepairRequiresMatchingRejectionAndChannelSwitch(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"old"}]}]}`)
+	for _, message := range []string{"invalid API signature", "Unauthorized", "rate limit exceeded", "invalid max_tokens", "invalid request", "expected thinking budget to be positive", `{"error":{"message":"invalid API signature"},"request":{"thinking":"invalid thinking signature"}}`} {
+		t.Run(message, func(t *testing.T) {
+			patched, changed := requestrepair.RepairThinking(body, []byte(message), true, true)
+			assert.False(t, changed)
+			assert.Equal(t, body, patched)
+		})
+	}
+	_, changed := requestrepair.RepairThinking(body, []byte(`invalid thinking signature`), false, true)
+	assert.False(t, changed)
+	_, changed = requestrepair.RepairThinking([]byte(`{"messages":[`), []byte(`invalid thinking signature`), true, false)
+	assert.False(t, changed)
+}
+
+func TestThinkingRepairMatchesCCSSignatureFailures(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"plan","signature":"old"},{"type":"text","text":"answer","signature":"pollution"},{"type":"tool_use","id":"call_1","name":"sign","signature":"pollution","input":{"signature":"business-value","number":9007199254740993}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"done"}]}]}`)
+	const expected = `{"thinking":{"type":"adaptive"},"messages":[{"role":"assistant","content":[{"type":"text","text":"plan"},{"type":"text","text":"answer"},{"type":"tool_use","id":"call_1","name":"sign","input":{"signature":"business-value","number":9007199254740993}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"done"}]}]}`
+	for _, message := range []string{
+		"Thought signature is not valid",
+		"assistant message must start with a thinking block",
+		"Expected `thinking` or `redacted_thinking`, but found `tool_use`",
+		"messages.0.content.0.signature: Field required",
+		"messages.0.content.1.signature: Extra inputs are not permitted",
+		"thinking or redacted_thinking blocks cannot be modified",
+	} {
+		t.Run(message, func(t *testing.T) {
+			patched, changed := requestrepair.RepairThinking(body, []byte(message), true, false)
+			require.True(t, changed)
+			assert.JSONEq(t, expected, string(patched))
+			assert.Contains(t, string(patched), "9007199254740993")
+			_, changed = requestrepair.RepairThinking(patched, []byte(message), true, false)
+			assert.False(t, changed)
+		})
+	}
+}
+
+func TestThinkingRepairRetainsEnabledModeOutsideToolContinuation(t *testing.T) {
+	for _, thinking := range []string{`{"type":"enabled","budget_tokens":2048}`, `{"type":"adaptive"}`, `{"type":"disabled"}`} {
+		t.Run(thinking, func(t *testing.T) {
+			body := []byte(`{"thinking":` + thinking + `,"messages":[{"role":"assistant","content":[{"type":"text","text":"answer","signature":"old"}]}]}`)
+			patched, changed := requestrepair.RepairThinking(body, []byte(`signature: Extra inputs are not permitted`), true, false)
+			require.True(t, changed)
+			assert.JSONEq(t, `{"thinking":`+thinking+`,"messages":[{"role":"assistant","content":[{"type":"text","text":"answer"}]}]}`, string(patched))
+		})
+	}
+	toolBody := []byte(`{"thinking":{"type":"enabled","budget_tokens":2048},"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"run","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"done"}]}]}`)
+	patched, changed := requestrepair.RepairThinking(toolBody, []byte(`must start with a thinking block`), true, false)
+	require.True(t, changed)
+	assert.JSONEq(t, `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"run","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"done"}]}]}`, string(patched))
 }

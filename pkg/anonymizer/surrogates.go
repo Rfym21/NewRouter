@@ -7,7 +7,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"net"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -18,6 +20,21 @@ var (
 	uuidPattern  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	awsARNPrefix = regexp.MustCompile(`^arn:aws:([^:]+):([^:]*):(\d{12}):(.+)$`)
 )
+
+var specialAddressScopes = []struct {
+	prefix netip.Prefix
+	kind   string
+}{
+	{netip.MustParsePrefix("192.0.2.0/24"), "documentation"},
+	{netip.MustParsePrefix("198.51.100.0/24"), "documentation"},
+	{netip.MustParsePrefix("203.0.113.0/24"), "documentation"},
+	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
+	{netip.MustParsePrefix("100.64.0.0/10"), "shared"},
+	{netip.MustParsePrefix("198.18.0.0/15"), "benchmark"},
+	{netip.MustParsePrefix("2001:2::/48"), "benchmark"},
+	{netip.MustParsePrefix("0.0.0.0/8"), "reserved"},
+	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
+}
 
 // surrogateEntropy draws the bounded integers that shape a surrogate.
 // cryptoEntropy produces a fresh unpredictable value per request; a
@@ -86,12 +103,18 @@ func (r surrogateRng) choice(values []string) string {
 	return values[r.entropy.Int(0, len(values)-1)]
 }
 
-func (r surrogateRng) lower(n int) string     { return r.from("abcdefghijklmnopqrstuvwxyz", n) }
-func (r surrogateRng) upperNum(n int) string  { return r.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", n) }
-func (r surrogateRng) alphaNum(n int) string  { return r.from("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", n) }
-func (r surrogateRng) base64URL(n int) string { return r.from("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-", n) }
-func (r surrogateRng) hex(n int) string       { return r.from("abcdef0123456789", n) }
-func (r surrogateRng) digits(n int) string    { return r.from("0123456789", n) }
+func (r surrogateRng) lower(n int) string { return r.from("abcdefghijklmnopqrstuvwxyz", n) }
+func (r surrogateRng) upperNum(n int) string {
+	return r.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", n)
+}
+func (r surrogateRng) alphaNum(n int) string {
+	return r.from("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", n)
+}
+func (r surrogateRng) base64URL(n int) string {
+	return r.from("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-", n)
+}
+func (r surrogateRng) hex(n int) string    { return r.from("abcdef0123456789", n) }
+func (r surrogateRng) digits(n int) string { return r.from("0123456789", n) }
 
 func (r surrogateRng) from(alphabet string, n int) string {
 	if n <= 0 || alphabet == "" {
@@ -131,9 +154,9 @@ func stableSurrogateSalt(engagement string) []byte {
 func generateSurrogate(rng surrogateRng, original string, entityType string) string {
 	switch entityType {
 	case "IP_ADDRESS":
-		return fakeIP(rng)
+		return fakeIP(rng, original)
 	case "CIDR":
-		return fakeCIDR(rng)
+		return fakeCIDR(rng, original)
 	case "HOSTNAME":
 		return fmt.Sprintf("%s-%04d", rng.choice([]string{"srv", "host", "node", "dc", "box", "ws", "app", "db"}), rng.entropy.Int(0, 9999))
 	case "DOMAIN":
@@ -143,7 +166,7 @@ func generateSurrogate(rng surrogateRng, original string, entityType string) str
 	case "EMAIL_ADDRESS", "EMAIL":
 		return rng.lower(8) + "@example.pentest"
 	case "URL":
-		return "http://" + fakeIP(rng) + "/path"
+		return fakeURL(rng, original)
 	case "ORGANIZATION":
 		return "[ORG_" + rng.upperNum(12) + "]"
 	case "PERSON":
@@ -177,22 +200,122 @@ func generateSurrogate(rng surrogateRng, original string, entityType string) str
 	}
 }
 
-func fakeIP(rng surrogateRng) string {
-	// The full private 10/8 space is large enough for bounded request vaults,
-	// unlike a few /24 pools which could overlap all true addresses in a batch.
-	return fmt.Sprintf("10.%d.%d.%d", rng.entropy.Int(0, 255), rng.entropy.Int(0, 255), rng.entropy.Int(1, 254))
+func addressKind(address netip.Addr) string {
+	switch {
+	case address.IsUnspecified():
+		return "unspecified"
+	case address.IsLoopback():
+		return "loopback"
+	case address.IsLinkLocalUnicast():
+		return "link-local"
+	case address.IsMulticast():
+		return "multicast"
+	case address.IsPrivate():
+		return "private"
+	default:
+		for _, scope := range specialAddressScopes {
+			if scope.prefix.Contains(address) {
+				return scope.kind
+			}
+		}
+		return "public"
+	}
 }
 
-func fakeCIDR(rng surrogateRng) string {
-	address := netip.AddrFrom4([4]byte{10, byte(rng.entropy.Int(0, 255)), byte(rng.entropy.Int(0, 255)), byte(rng.entropy.Int(0, 255))})
-	return netip.PrefixFrom(address, rng.entropy.Int(16, 30)).Masked().String()
+func fakeIP(rng surrogateRng, original string) string {
+	address, err := netip.ParseAddr(original)
+	if err != nil {
+		return "ip-" + rng.lower(12)
+	}
+	mapped := address.Is4In6()
+	address = address.Unmap()
+	kind := addressKind(address)
+	if address.Is4() {
+		var replacement string
+		switch kind {
+		case "private":
+			// The 10/8 space retains private-network semantics and enough entropy
+			// for the bounded vault to resolve collisions with real input addresses.
+			replacement = fmt.Sprintf("10.%d.%d.%d", rng.entropy.Int(0, 255), rng.entropy.Int(0, 255), rng.entropy.Int(1, 254))
+		case "loopback":
+			replacement = fmt.Sprintf("127.%d.%d.%d", rng.entropy.Int(0, 255), rng.entropy.Int(0, 255), rng.entropy.Int(1, 254))
+		case "link-local":
+			replacement = fmt.Sprintf("169.254.%d.%d", rng.entropy.Int(1, 254), rng.entropy.Int(1, 254))
+		default:
+			family := "ip"
+			if mapped {
+				family = "ipv4-mapped"
+			}
+			// A named stand-in preserves reachability semantics without directing
+			// the provider toward a randomly selected real public address.
+			return kind + "-" + family + "-" + rng.lower(12)
+		}
+		if mapped {
+			return "::ffff:" + replacement
+		}
+		return replacement
+	}
+	if kind != "private" && kind != "link-local" {
+		return kind + "-ipv6-" + rng.lower(12)
+	}
+	var bytes [16]byte
+	for i := range bytes {
+		bytes[i] = byte(rng.entropy.Int(0, 255))
+	}
+	bytes[0] = 0xfd
+	if kind == "link-local" {
+		bytes[0], bytes[1] = 0xfe, 0x80
+		clear(bytes[2:8])
+	}
+	return netip.AddrFrom16(bytes).String()
+}
+
+func fakeCIDR(rng surrogateRng, original string) string {
+	prefix, err := netip.ParsePrefix(original)
+	if err != nil {
+		return "network-" + rng.lower(12)
+	}
+	address := prefix.Addr()
+	// Narrow private networks retain valid CIDR notation. Broad or public
+	// networks use a named stand-in so masking cannot create a real route or
+	// exhaust the few available networks in their original prefix class.
+	if address.IsPrivate() && !address.Is4In6() && prefix.Bits() >= 24 {
+		replacement, err := netip.ParseAddr(fakeIP(rng, address.String()))
+		if err == nil {
+			return netip.PrefixFrom(replacement, prefix.Bits()).Masked().String()
+		}
+	}
+	family := "ipv6"
+	if address.Is4() {
+		family = "ipv4"
+	}
+	return fmt.Sprintf("%s-%s-network-%s/%d", addressKind(address.Unmap()), family, rng.lower(12), prefix.Bits())
+}
+
+func fakeURL(rng surrogateRng, original string) string {
+	parsed, err := url.Parse(original)
+	if err != nil || parsed.Hostname() == "" {
+		return "http://host-" + rng.lower(12) + ".invalid/path"
+	}
+	host := "host-" + rng.lower(12) + ".invalid"
+	if address, err := netip.ParseAddr(parsed.Hostname()); err == nil {
+		host = fakeIP(rng, address.String())
+	} else if strings.EqualFold(parsed.Hostname(), "localhost") {
+		host = "loopback-host-" + rng.lower(12)
+	}
+	if port := parsed.Port(); port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if address, err := netip.ParseAddr(host); err == nil && address.Is6() {
+		host = "[" + host + "]"
+	}
+	return (&url.URL{Scheme: parsed.Scheme, Host: host, Path: "/path"}).String()
 }
 
 func fakeToken(rng surrogateRng, original string) string {
 	awsPrefixes := []string{"AKIA", "ASIA", "AROA", "AIPA", "ANPA", "ANVA", "APKA", "AIDA"}
 	for _, prefix := range awsPrefixes {
 		if strings.HasPrefix(original, prefix) && len(original) >= 20 {
-			return prefix + rng.upperNum(len(original) - len(prefix))
+			return prefix + rng.upperNum(len(original)-len(prefix))
 		}
 	}
 	if strings.HasPrefix(original, "eyJ") && strings.Count(original, ".") == 2 {

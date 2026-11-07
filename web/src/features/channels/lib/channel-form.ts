@@ -382,6 +382,7 @@ export const channelFormSchema = z
     tls_insecure_skip_verify: z.boolean().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     responses_websocket_enabled: z.boolean().optional(),
+    image_fallback_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
     empty_response_no_billing_mode: z.enum(['inherit', 'enabled', 'disabled']),
@@ -646,6 +647,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   tls_insecure_skip_verify: false,
   pass_through_body_enabled: false,
   responses_websocket_enabled: false,
+  image_fallback_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
   empty_response_no_billing_mode: 'inherit',
@@ -718,6 +720,7 @@ export function transformChannelToFormDefaults(
     tls_insecure_skip_verify: false,
     pass_through_body_enabled: false,
     responses_websocket_enabled: false,
+    image_fallback_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
     unify_request_response_model_name_enabled: false,
@@ -776,6 +779,7 @@ export function transformChannelToFormDefaults(
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         responses_websocket_enabled:
           parsed.responses_websocket_enabled === true,
+        image_fallback_enabled: parsed.image_fallback_enabled === true,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
         unify_request_response_model_name_enabled:
@@ -1003,6 +1007,7 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
         : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
+    image_fallback_enabled: formData.image_fallback_enabled === true,
     proxy: formData.proxy?.trim() || '',
     pass_through_body_enabled: formData.pass_through_body_enabled === true,
     responses_websocket_enabled:
@@ -1187,7 +1192,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   }
 
-  // Claude-capable upstreams (Anthropic 14, AWS Bedrock 33, Vertex 41): cache & rectifier controls.
+  settingsObj.thinking_signature_rectifier_enabled =
+    formData.thinking_signature_rectifier_enabled === true
+  settingsObj.responses_encrypted_content_rectifier_enabled =
+    formData.responses_encrypted_content_rectifier_enabled === true
+
+  // Claude-capable upstreams (Anthropic 14, AWS Bedrock 33, Vertex 41): cache controls.
   const CLAUDE_CAPABLE_CHANNEL_TYPES = [14, 33, 41]
   if (CLAUDE_CAPABLE_CHANNEL_TYPES.includes(formData.type)) {
     settingsObj.force_cache_enabled = formData.force_cache_enabled === true
@@ -1205,8 +1215,6 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       ? Math.min(100, Math.max(0, percent))
       : 0
     settingsObj.cache_read_min_ratio = clamped / 100
-    settingsObj.thinking_signature_rectifier_enabled =
-      formData.thinking_signature_rectifier_enabled === true
     settingsObj.claude_code_simulation_enabled =
       formData.claude_code_simulation_enabled === true
     const claudeCodeSimulationHeaders = parseJsonOrFallback(
@@ -1251,17 +1259,8 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.cache_1h_bill_as_5m_enabled
     delete settingsObj.cache_read_min_ratio_enabled
     delete settingsObj.cache_read_min_ratio
-    delete settingsObj.thinking_signature_rectifier_enabled
     delete settingsObj.claude_code_simulation_enabled
     delete settingsObj.claude_code_simulation
-  }
-
-  // Responses encrypted-content rectifier applies to OpenAI (1) / Azure (3) only.
-  if (formData.type === 1 || formData.type === 3) {
-    settingsObj.responses_encrypted_content_rectifier_enabled =
-      formData.responses_encrypted_content_rectifier_enabled === true
-  } else if ('responses_encrypted_content_rectifier_enabled' in settingsObj) {
-    delete settingsObj.responses_encrypted_content_rectifier_enabled
   }
 
   // Only the Ollama adaptor can switch chat completions to the OpenAI-compatible endpoint.

@@ -1601,6 +1601,109 @@ test('request processing configuration does not mark the network category as con
   ).not.toHaveAccessibleName(/Configured/)
 })
 
+test.each([1, 14, 33, 41, 57, 58, 59, 60])(
+  'provider %s saves image fallback and thinking repair settings in Request & Response',
+  async (type) => {
+    editingChannel = {
+      ...editingChannel,
+      type,
+      other: '{"default":"global"}',
+      settings: JSON.stringify({
+        vertex_key_type: 'api_key',
+        advanced_custom: {
+          advanced_routes: [
+            {
+              incoming_path: '/v1/chat/completions',
+              upstream_path: '/v1/chat/completions',
+              converter: 'none',
+            },
+          ],
+        },
+      }),
+    }
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    const requestTab = screen.getByRole('tab', { name: /Request & Response/ })
+    await user.click(requestTab)
+    const toggle = screen.getByRole('switch', {
+      name: 'Image request fallback',
+    })
+    expect(toggle).not.toBeChecked()
+    await user.click(toggle)
+    for (const name of [
+      'Auto Strip & Retry on Thinking Signature Error',
+      'Auto Strip & Retry on Responses Encrypted Content Error',
+    ]) {
+      const rectifier = screen.getByRole('switch', { name })
+      expect(rectifier).not.toBeChecked()
+      await user.click(rectifier)
+    }
+    expect(requestTab).toHaveAccessibleName(/Configured/)
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    const payload = put.mock.calls[0]?.[1] as {
+      setting: string
+      settings: string
+    }
+    expect(JSON.parse(payload.setting)).toMatchObject({
+      image_fallback_enabled: true,
+    })
+    expect(JSON.parse(payload.settings)).toMatchObject({
+      thinking_signature_rectifier_enabled: true,
+      responses_encrypted_content_rectifier_enabled: true,
+    })
+  }
+)
+
+test('saved image fallback and thinking repair switches can be disabled and saved', async () => {
+  editingChannel = {
+    ...editingChannel,
+    setting: '{"image_fallback_enabled":true}',
+    settings: JSON.stringify({
+      thinking_signature_rectifier_enabled: true,
+      responses_encrypted_content_rectifier_enabled: true,
+    }),
+  }
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  const requestTab = screen.getByRole('tab', { name: /Request & Response/ })
+  expect(requestTab).toHaveAccessibleName(/Configured/)
+  await user.click(requestTab)
+  const toggle = screen.getByRole('switch', { name: 'Image request fallback' })
+  expect(toggle).toBeChecked()
+  await user.click(toggle)
+  for (const name of [
+    'Auto Strip & Retry on Thinking Signature Error',
+    'Auto Strip & Retry on Responses Encrypted Content Error',
+  ]) {
+    const rectifier = screen.getByRole('switch', { name })
+    expect(rectifier).toBeChecked()
+    await user.click(rectifier)
+  }
+  expect(requestTab).not.toHaveAccessibleName(/Configured/)
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as {
+    setting: string
+    settings: string
+  }
+  expect(JSON.parse(payload.setting)).toMatchObject({
+    image_fallback_enabled: false,
+  })
+  expect(JSON.parse(payload.settings)).toMatchObject({
+    thinking_signature_rectifier_enabled: false,
+    responses_encrypted_content_rectifier_enabled: false,
+  })
+})
+
 test.each([1, 57, 58, 59, 60])(
   'provider %s marks a saved Responses WebSocket setting in Request & Response and clears the mark when disabled',
   async (type) => {

@@ -134,7 +134,7 @@ func TestURLAliasAndItsIPRemainIdempotentAcrossRequestHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, session.Snapshot(), 1)
 	assert.Equal(t, "URL", session.Snapshot()[0].EntityType)
-	assert.True(t, strings.HasPrefix(session.Snapshot()[0].Surrogate, "http://10."))
+	assert.True(t, strings.HasPrefix(session.Snapshot()[0].Surrogate, "https://host-"))
 	derived, err := AnonymizeTextFields(masked, session)
 	require.NoError(t, err)
 	assert.JSONEq(t, string(masked), string(derived), "the IP inside an existing URL alias must not create another alias")

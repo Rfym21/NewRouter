@@ -91,6 +91,13 @@ func anonymizeRelayRequestJSON(c *gin.Context, info *relaycommon.RelayInfo, form
 		ctx = c.Request.Context()
 	}
 	session.WithDetector(ctx, detector)
+	if info.RelayMode == relayconstant.RelayModeChatCompletions ||
+		info.RelayMode == relayconstant.RelayModeResponses ||
+		info.RelayMode == relayconstant.RelayModeResponsesCompact || format == types.RelayFormatClaude {
+		session.WithDetectionHistory(fmt.Sprintf("channel:%d:model:%s:format:%s", info.ChannelId, info.UpstreamModelName, format))
+	} else {
+		session.WithDetectionHistory("")
+	}
 
 	switch {
 	case format == types.RelayFormatClaude:

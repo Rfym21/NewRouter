@@ -49,7 +49,7 @@
 
 映射默认在闲置一小时后过期，内存缓存还受引用数和 32 MiB 总数据限制。启用 Redis 后，映射通过 AES-GCM 加密保存，并绑定用户/令牌对应的缓存键。多实例使用同一 Redis 和 CRYPTO_SECRET；未显式设置 CRYPTO_SECRET 时使用 SESSION_SECRET。未启用 Redis 时，重启或切换到其他实例后会丢失历史映射，后续请求按严格校验开关处理。
 
-闲置过期时间与引用数上限可在 `/system-settings/operations/runtime` 的“匿名化上下文缓存”中调整，保存后热生效（Redis 中已写入条目按原 TTL 自然过期）。`ANONYMIZATION_CONTEXT_TTL_SECONDS`（60～86400 秒，默认 3600）和 `ANONYMIZATION_MAX_CONTEXTS`（16～65536，默认 1024）仅作为初始默认值。一个 response、output item、密文或签名各计一个引用。单份保存的映射最多 128 KiB，超限会在请求准备阶段返回错误。
+闲置过期时间、引用数上限和单份映射大小可在 `/system-settings/operations/runtime` 的“匿名化上下文缓存”中调整，保存后热生效（Redis 中已写入条目按原 TTL 自然过期）。`ANONYMIZATION_CONTEXT_TTL_SECONDS`（60～86400 秒，默认 3600）、`ANONYMIZATION_MAX_CONTEXTS`（16～65536，默认 1024）和 `ANONYMIZATION_MAX_CONTEXT_KB`（64～16384 KiB，默认 4096）仅作为初始默认值。一个 response、output item、密文或签名各计一个引用。单份映射超过大小上限时，本次请求仍正常完成，但该轮续聊映射不会保存，服务日志会记录降级原因。
 
 ## 稳定假名模式
 

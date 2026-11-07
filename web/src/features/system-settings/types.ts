@@ -414,6 +414,7 @@ export type OperationsSettings = {
   'runtime_setting.anonymization_presidio_url': string
   'runtime_setting.anonymization_context_ttl_seconds': number
   'runtime_setting.anonymization_max_contexts': number
+  'runtime_setting.anonymization_max_context_kb': number
   'runtime_setting.force_stream_option_enabled': boolean
   'runtime_setting.count_token_enabled': boolean
   'runtime_setting.get_media_token_enabled': boolean

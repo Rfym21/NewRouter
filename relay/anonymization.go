@@ -73,14 +73,6 @@ func anonymizeRelayRequestJSON(c *gin.Context, info *relaycommon.RelayInfo, form
 	if session == nil {
 		return data, nil
 	}
-	defer func() {
-		if resultErr == nil {
-			if err := anonymizer.CheckContinuationCapacity(c); err != nil {
-				output = nil
-				resultErr = err
-			}
-		}
-	}()
 	if err := anonymizer.RestoreRequestContext(c, data); err != nil {
 		return nil, err
 	}

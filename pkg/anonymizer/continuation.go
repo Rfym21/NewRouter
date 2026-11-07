@@ -23,24 +23,16 @@ import (
 )
 
 const continuationKey = "new-router.anonymizer.continuation"
-const maxSavedMappingBytes = 128 << 10
+const (
+	defaultMaxSavedMappingBytes = 4 << 20
+	minSavedMappingBytes        = 64 << 10
+	maxSavedMappingBytes        = 16 << 20
+)
 
 // ErrContinuationUnavailable indicates that saved history mappings cannot be loaded.
 var ErrContinuationUnavailable = errors.New("anonymization context is unavailable or expired; start a new conversation")
 
-// CheckContinuationCapacity rejects oversized mapping histories during request
-// preparation, before upstream work can create state that cannot be retained.
-func CheckContinuationCapacity(c *gin.Context) error {
-	if continuationFromContext(c) == nil {
-		return nil
-	}
-	session := FromContext(c)
-	if session == nil {
-		return nil
-	}
-	_, err := encodeMappings(session.Snapshot())
-	return err
-}
+var errContextCapacityExceeded = errors.New("anonymization context capacity exceeded")
 
 type continuationState struct {
 	scope      string
@@ -307,7 +299,16 @@ func ObserveResponse(c *gin.Context, data []byte) error {
 		return nil
 	}
 	if err := defaultContextStore.save(requestContext(c), state.scope, newRefs, session.Snapshot()); err != nil {
-		return errors.New("could not retain anonymization context")
+		if contextErr := requestContext(c).Err(); contextErr != nil {
+			return contextErr
+		}
+		// Retention is an optimization for later turns. A storage or size limit
+		// must not turn an otherwise valid response into a failed request.
+		common.SysLog(fmt.Sprintf("anonymization continuation degraded: could not retain context: %v", err))
+		for _, ref := range newRefs {
+			state.seen["response:"+ref] = true
+		}
+		return nil
 	}
 	for _, ref := range newRefs {
 		state.seen["response:"+ref] = true
@@ -338,45 +339,59 @@ type contextStore struct {
 	bytes      int
 	sequence   uint64
 	maxEntries int
+	maxBytes   int
 	ttl        time.Duration
 	now        func() time.Time
 }
 
 func newContextStore(maxEntries int, ttl time.Duration, now func() time.Time) *contextStore {
-	return &contextStore{refs: make(map[string]savedReference), snapshots: make(map[string]*savedContext), maxEntries: maxEntries, ttl: ttl, now: now}
+	return &contextStore{
+		refs:       make(map[string]savedReference),
+		snapshots:  make(map[string]*savedContext),
+		maxEntries: maxEntries,
+		maxBytes:   defaultMaxSavedMappingBytes,
+		ttl:        ttl,
+		now:        now,
+	}
 }
 
 // clampContextLimits enforces the same bounds as the environment defaults.
-func clampContextLimits(maxEntries, ttlSeconds int) (int, time.Duration) {
-	return min(max(maxEntries, 16), 65536), time.Duration(min(max(ttlSeconds, 60), 86400)) * time.Second
+func clampContextLimits(maxEntries, ttlSeconds, maxBytes int) (int, time.Duration, int) {
+	return min(max(maxEntries, 16), 65536),
+		time.Duration(min(max(ttlSeconds, 60), 86400)) * time.Second,
+		min(max(maxBytes, minSavedMappingBytes), maxSavedMappingBytes)
 }
 
 var defaultContextStore = func() *contextStore {
-	entries, ttl := clampContextLimits(
+	entries, ttl, maxBytes := clampContextLimits(
 		common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXTS", 1024),
 		common.GetEnvOrDefault("ANONYMIZATION_CONTEXT_TTL_SECONDS", 3600),
+		common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXT_KB", defaultMaxSavedMappingBytes>>10)<<10,
 	)
-	return newContextStore(entries, ttl, time.Now)
+	store := newContextStore(entries, ttl, time.Now)
+	store.maxBytes = maxBytes
+	return store
 }()
 
 // SetContextStoreLimits hot-applies runtime limits to the default continuation
 // store. A shorter TTL only affects saves and renewals from this point on;
 // entries already stored in Redis keep their remaining TTL.
-func SetContextStoreLimits(maxEntries, ttlSeconds int) {
-	entries, ttl := clampContextLimits(maxEntries, ttlSeconds)
+func SetContextStoreLimits(maxEntries, ttlSeconds, maxBytes int) {
+	entries, ttl, maxBytes := clampContextLimits(maxEntries, ttlSeconds, maxBytes)
 	s := defaultContextStore
 	s.mu.Lock()
 	s.maxEntries = entries
+	s.maxBytes = maxBytes
 	s.ttl = ttl
 	s.mu.Unlock()
 }
 
 // limits snapshots the runtime-mutable bounds under the store lock; the Redis
 // paths run outside it because their pipelines hold their own timeouts.
-func (s *contextStore) limits() (int, time.Duration) {
+func (s *contextStore) limits() (int, time.Duration, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.maxEntries, s.ttl
+	return s.maxEntries, s.ttl, s.maxBytes
 }
 
 func continuationCacheKey(scope, ref string) string {
@@ -384,7 +399,7 @@ func continuationCacheKey(scope, ref string) string {
 	return "anonymization:v1:" + hex.EncodeToString(digest[:])
 }
 
-func encodeMappings(mappings []Mapping) ([]byte, error) {
+func encodeMappings(mappings []Mapping, maxBytes int) ([]byte, error) {
 	sort.Slice(mappings, func(i, j int) bool {
 		if mappings[i].Surrogate == mappings[j].Surrogate {
 			return mappings[i].Original < mappings[j].Original
@@ -395,8 +410,8 @@ func encodeMappings(mappings []Mapping) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxSavedMappingBytes {
-		return nil, errors.New("anonymization context capacity exceeded")
+	if len(data) > maxBytes {
+		return nil, errContextCapacityExceeded
 	}
 	return data, nil
 }
@@ -405,11 +420,11 @@ func (s *contextStore) save(ctx context.Context, scope string, refs []string, ma
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	maxEntries, _ := s.limits()
+	maxEntries, _, maxBytes := s.limits()
 	if len(refs) > maxEntries {
 		return errors.New("too many anonymization context references")
 	}
-	data, err := encodeMappings(mappings)
+	data, err := encodeMappings(mappings, maxBytes)
 	if err != nil {
 		return err
 	}
@@ -446,7 +461,8 @@ func (s *contextStore) save(ctx context.Context, scope string, refs []string, ma
 		s.sequence++
 		s.refs[key] = savedReference{snapshot: id, expires: s.now().Add(s.ttl), sequence: s.sequence}
 	}
-	for len(s.refs) > s.maxEntries || s.bytes > 32<<20 {
+	totalBytes := max(32<<20, s.maxBytes*2)
+	for len(s.refs) > s.maxEntries || s.bytes > totalBytes {
 		oldest := ""
 		var sequence uint64
 		for key, ref := range s.refs {
@@ -465,8 +481,8 @@ func (s *contextStore) load(ctx context.Context, scope, ref string) ([]Mapping, 
 	}
 	key := continuationCacheKey(scope, ref)
 	var data []byte
+	_, ttl, maxBytes := s.limits()
 	if common.RedisEnabled && common.RDB != nil {
-		_, ttl := s.limits()
 		bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		encoded, err := common.RDB.Get(bounded, key).Bytes()
@@ -500,7 +516,7 @@ func (s *contextStore) load(ctx context.Context, scope, ref string) ([]Mapping, 
 		data = append([]byte(nil), s.snapshots[entry.snapshot].data...)
 		s.mu.Unlock()
 	}
-	if len(data) > maxSavedMappingBytes {
+	if len(data) > maxBytes {
 		return nil, ErrContinuationUnavailable
 	}
 	var mappings []Mapping
@@ -563,7 +579,7 @@ func openContext(key string, data []byte) ([]byte, error) {
 }
 
 func (s *contextStore) saveRedis(ctx context.Context, keys []string, data []byte) error {
-	maxEntries, ttl := s.limits()
+	maxEntries, ttl, _ := s.limits()
 	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	const index = "anonymization:v1:expiry"

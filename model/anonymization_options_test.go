@@ -80,6 +80,19 @@ func TestStrictAnonymizationContextDefaultsPersistenceAndHotReload(t *testing.T)
 	assert.Equal(t, "true", requireOptionValue(t, db, key))
 }
 
+func TestAnonymizationContextSizePersistsAndHotReloads(t *testing.T) {
+	db := setupAuditToggleTest(t)
+	InitOptionMap()
+	const key = "runtime_setting.anonymization_max_context_kb"
+	assert.Equal(t, "4096", common.OptionMap[key])
+	require.NoError(t, UpdateOption(key, "8192"))
+	assert.Equal(t, "8192", requireOptionValue(t, db, key))
+	assert.Equal(t, "8192", common.OptionMap[key])
+	require.NoError(t, db.Model(&Option{}).Where("key = ?", key).Update("value", "2048").Error)
+	loadOptionsFromDatabase()
+	assert.Equal(t, "2048", common.OptionMap[key])
+}
+
 func TestAnonymizationAnalyzerPersistenceValidationAndHotReload(t *testing.T) {
 	db := setupAuditToggleTest(t)
 	previousDir, previousURL := runtime_setting.GetAnonymizationAnalyzerConfig()

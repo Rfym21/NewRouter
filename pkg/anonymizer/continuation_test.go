@@ -117,10 +117,24 @@ func TestContextStoreExpiryEvictionAndBounds(t *testing.T) {
 	assert.ErrorIs(t, err, ErrContinuationUnavailable)
 	assert.Len(t, store.refs, 2)
 	assert.Error(t, store.save(ctx, "scope", []string{"a", "b", "c"}, mappings))
-	assert.Error(t, store.save(ctx, "scope", []string{"big"}, []Mapping{{Original: strings.Repeat("x", maxSavedMappingBytes), Surrogate: "fake", EntityType: "CUSTOM"}}))
+	assert.ErrorIs(t, store.save(ctx, "scope", []string{"big"}, []Mapping{{Original: strings.Repeat("x", defaultMaxSavedMappingBytes), Surrogate: "fake", EntityType: "CUSTOM"}}), errContextCapacityExceeded)
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	assert.Error(t, store.save(canceled, "scope", []string{"canceled"}, mappings))
+}
+
+func TestOversizedContinuationDegradesWithoutFailingResponse(t *testing.T) {
+	isolatedContinuationStore(t)
+	SetContextStoreLimits(1024, 3600, minSavedMappingBytes)
+	c, session := continuationContext(9, 10)
+	require.NoError(t, session.Import([]Mapping{{
+		Original:   strings.Repeat("x", minSavedMappingBytes),
+		Surrogate:  "fake",
+		EntityType: "CUSTOM",
+	}}))
+	require.NoError(t, ObserveResponse(c, []byte(`{"id":"oversized","object":"response"}`)))
+	next, _ := continuationContext(9, 10)
+	assert.ErrorIs(t, RestoreRequestContext(next, []byte(`{"previous_response_id":"oversized"}`)), ErrContinuationUnavailable)
 }
 
 func TestRedisContinuationEncryptionAndCrossReplicaRecovery(t *testing.T) {

@@ -97,6 +97,7 @@ const runtimeSchema = z
       }, 'Invalid Presidio analyzer URL'),
       anonymization_context_ttl_seconds: z.coerce.number().min(60).max(86400),
       anonymization_max_contexts: z.coerce.number().min(16).max(65536),
+      anonymization_max_context_kb: z.coerce.number().min(64).max(16384),
       force_stream_option_enabled: z.boolean(),
       count_token_enabled: z.boolean(),
       get_media_token_enabled: z.boolean(),
@@ -156,6 +157,7 @@ type FlatRuntimeDefaults = {
   'runtime_setting.anonymization_presidio_url': string
   'runtime_setting.anonymization_context_ttl_seconds': number
   'runtime_setting.anonymization_max_contexts': number
+  'runtime_setting.anonymization_max_context_kb': number
   'runtime_setting.force_stream_option_enabled': boolean
   'runtime_setting.count_token_enabled': boolean
   'runtime_setting.get_media_token_enabled': boolean
@@ -278,6 +280,11 @@ const buildFormDefaults = (
       16,
       65536
     ),
+    anonymization_max_context_kb: clampRange(
+      defaults['runtime_setting.anonymization_max_context_kb'],
+      64,
+      16384
+    ),
     force_stream_option_enabled:
       defaults['runtime_setting.force_stream_option_enabled'],
     count_token_enabled: defaults['runtime_setting.count_token_enabled'],
@@ -384,6 +391,8 @@ const normalizeFormValues = (
     values.runtime_setting.anonymization_context_ttl_seconds,
   'runtime_setting.anonymization_max_contexts':
     values.runtime_setting.anonymization_max_contexts,
+  'runtime_setting.anonymization_max_context_kb':
+    values.runtime_setting.anonymization_max_context_kb,
   'runtime_setting.force_stream_option_enabled':
     values.runtime_setting.force_stream_option_enabled,
   'runtime_setting.count_token_enabled':
@@ -718,6 +727,32 @@ export function RuntimeSettingsSection({
                   <FormDescription>
                     {t(
                       'Oldest references are evicted first (16-65536). One response, output item, ciphertext or signature each counts as one reference.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='runtime_setting.anonymization_max_context_kb'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Anonymization context max size (KB)')}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={64}
+                      max={16384}
+                      step={1}
+                      {...safeNumberFieldProps(field)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Maximum serialized mappings retained for one conversation (64-16384). Oversized contexts are skipped without failing the request.'
                     )}
                   </FormDescription>
                   <FormMessage />

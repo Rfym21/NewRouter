@@ -90,6 +90,7 @@ const defaultOperationsSettings: OperationsSettings = {
   'runtime_setting.anonymization_presidio_url': '',
   'runtime_setting.anonymization_context_ttl_seconds': 3600,
   'runtime_setting.anonymization_max_contexts': 1024,
+  'runtime_setting.anonymization_max_context_kb': 4096,
   'runtime_setting.force_stream_option_enabled': true,
   'runtime_setting.count_token_enabled': true,
   'runtime_setting.get_media_token_enabled': true,

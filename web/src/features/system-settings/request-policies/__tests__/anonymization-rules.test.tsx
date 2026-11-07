@@ -144,6 +144,7 @@ function AnalyzerFixture({
             'runtime_setting.anonymization_presidio_url': url,
             'runtime_setting.anonymization_context_ttl_seconds': 3600,
             'runtime_setting.anonymization_max_contexts': 1024,
+            'runtime_setting.anonymization_max_context_kb': 4096,
             'runtime_setting.force_stream_option_enabled': true,
             'runtime_setting.count_token_enabled': true,
             'runtime_setting.get_media_token_enabled': true,
@@ -273,6 +274,18 @@ test('both analyzer fields can be cleared and a blank analyzer can save unrelate
   expect(api.put).toHaveBeenLastCalledWith('/api/option/', {
     key: 'runtime_setting.anonymization_context_ttl_seconds',
     value: 7200,
+  })
+  fireEvent.change(
+    screen.getByRole('spinbutton', {
+      name: 'Anonymization context max size (KB)',
+    }),
+    { target: { value: '8192' } }
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(3))
+  expect(api.put).toHaveBeenLastCalledWith('/api/option/', {
+    key: 'runtime_setting.anonymization_max_context_kb',
+    value: 8192,
   })
 })
 

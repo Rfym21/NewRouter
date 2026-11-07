@@ -41,6 +41,7 @@ type RuntimeSetting struct {
 	MaxFileDownloadMB              int    `json:"max_file_download_mb"`
 	AnonymizationContextTTLSeconds int    `json:"anonymization_context_ttl_seconds"`
 	AnonymizationMaxContexts       int    `json:"anonymization_max_contexts"`
+	AnonymizationMaxContextKB      int    `json:"anonymization_max_context_kb"`
 	AnonymizationLocalNERModelDir  string `json:"anonymization_local_ner_model_dir"`
 	AnonymizationPresidioURL       string `json:"anonymization_presidio_url"`
 	ChannelTestRequestInterval     int    `json:"channel_test_request_interval"`
@@ -86,6 +87,7 @@ var runtimeSetting = RuntimeSetting{
 	// 匿名化上下文沿用环境变量作为初始默认;面板保存后热覆盖。
 	AnonymizationContextTTLSeconds: common.GetEnvOrDefault("ANONYMIZATION_CONTEXT_TTL_SECONDS", 3600),
 	AnonymizationMaxContexts:       common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXTS", 1024),
+	AnonymizationMaxContextKB:      common.GetEnvOrDefault("ANONYMIZATION_MAX_CONTEXT_KB", 4096),
 	AnonymizationLocalNERModelDir:  strings.TrimSpace(os.Getenv("ANONYMIZATION_LOCAL_NER_MODEL_DIR")),
 	AnonymizationPresidioURL:       strings.TrimSpace(os.Getenv("ANONYMIZATION_PRESIDIO_URL")),
 	ChannelTestRequestInterval:     0,
@@ -183,7 +185,11 @@ func ApplyToRuntime() {
 	constant.NotifyLimitCount = runtimeSetting.NotifyLimitCount
 	constant.NotificationLimitDurationMinute = runtimeSetting.NotificationLimitDuration
 	constant.ErrorLogEnabled = runtimeSetting.ErrorLogEnabled
-	anonymizer.SetContextStoreLimits(runtimeSetting.AnonymizationMaxContexts, runtimeSetting.AnonymizationContextTTLSeconds)
+	anonymizer.SetContextStoreLimits(
+		runtimeSetting.AnonymizationMaxContexts,
+		runtimeSetting.AnonymizationContextTTLSeconds,
+		runtimeSetting.AnonymizationMaxContextKB<<10,
+	)
 	anonymizationAnalyzerConfig.Store([2]string{strings.TrimSpace(runtimeSetting.AnonymizationLocalNERModelDir), strings.TrimSpace(runtimeSetting.AnonymizationPresidioURL)})
 
 	current := transportConfig{

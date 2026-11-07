@@ -97,6 +97,8 @@ const OPERATIONS_SECTIONS = [
             3600,
           'runtime_setting.anonymization_max_contexts':
             settings['runtime_setting.anonymization_max_contexts'] ?? 1024,
+          'runtime_setting.anonymization_max_context_kb':
+            settings['runtime_setting.anonymization_max_context_kb'] ?? 4096,
           'runtime_setting.force_stream_option_enabled':
             settings['runtime_setting.force_stream_option_enabled'] ?? true,
           'runtime_setting.count_token_enabled':

@@ -306,6 +306,22 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		if apiErr = s.restoreConnectionContext(c, modelName); apiErr != nil {
 			return apiErr
 		}
+		// The channel is settled now: run the ingress hooks it scopes, which
+		// the connection-level ingress could not.
+		lateChanged, lateSteps, lateRecord, lateErr := requestplugin.SocketIngressChannel(c, types.RelayFormatOpenAIResponses)
+		if lateErr != nil {
+			ingress := &relaycommon.RelayInfo{}
+			ingress.SetRequestPluginIngress(lateSteps, lateRecord)
+			service.RecordRelayErrorLog(c, 0, lateErr, ingress)
+			return lateErr
+		}
+		ingressSteps = append(ingressSteps, lateSteps...)
+		ingressRecord = append(ingressRecord, lateRecord...)
+		if lateChanged {
+			if apiErr = reloadResponsesWSCreate(c, &create); apiErr != nil {
+				return apiErr
+			}
+		}
 		info = relaycommon.GenRelayInfoResponses(c, &create.Request)
 		info.IsStream = true
 		info.SetRequestPluginIngress(ingressSteps, ingressRecord)
@@ -333,6 +349,20 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				return apiErr
 			}
 			service.AppendUsedChannel(c, channel.Id)
+			lateChanged, lateSteps, lateRecord, lateErr := requestplugin.SocketIngressChannel(c, types.RelayFormatOpenAIResponses)
+			if lateErr != nil {
+				ingress := &relaycommon.RelayInfo{}
+				ingress.SetRequestPluginIngress(lateSteps, lateRecord)
+				service.RecordRelayErrorLog(c, channel.Id, lateErr, ingress)
+				return lateErr
+			}
+			ingressSteps = append(ingressSteps, lateSteps...)
+			ingressRecord = append(ingressRecord, lateRecord...)
+			if lateChanged {
+				if apiErr = reloadResponsesWSCreate(c, &create); apiErr != nil {
+					return apiErr
+				}
+			}
 			if info == nil {
 				info = relaycommon.GenRelayInfoResponses(c, &create.Request)
 				info.IsStream = true

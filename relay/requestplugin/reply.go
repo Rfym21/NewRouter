@@ -75,7 +75,10 @@ func replyEndpoint(format types.RelayFormat, mode int, path string) bool {
 // does nothing.
 func Reply(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInfo) func() {
 	plan := planOf(c)
-	if plan == nil || info == nil {
+	if plan == nil {
+		return func() {}
+	}
+	if info == nil {
 		return func() {}
 	}
 	setting, _ := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting)
@@ -89,7 +92,10 @@ func Reply(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInfo
 	if !plan.replies || !replyEndpoint(format, info.RelayMode, c.Request.URL.Path) {
 		return func() {}
 	}
-	instances := plan.scope(StageReply, group, info.OriginModelName, setting.RequestPlugins)
+	// The distributor settled the channel before this attempt; read it from
+	// the context so a channel-scoped reply instance joins the scope.
+	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	instances := plan.scopeForChannel(StageReply, group, info.OriginModelName, setting.RequestPlugins, channelID)
 	if len(instances) == 0 {
 		return func() {}
 	}

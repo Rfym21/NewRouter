@@ -18,14 +18,23 @@ const InstancesOption = "request_plugin_setting.instances"
 // model. Whether a failure stops the request is the plugin's meta.optional;
 // the required member of older saved lists is dropped on load.
 type Instance struct {
-	ID      string          `json:"id"`
-	Name    string          `json:"name"`
-	Plugin  string          `json:"plugin"`
-	Enabled bool            `json:"enabled"`
-	Global  bool            `json:"global"`
-	Groups  []string        `json:"groups"`
-	Models  []string        `json:"models"`
-	Config  json.RawMessage `json:"config"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Plugin  string   `json:"plugin"`
+	Enabled bool     `json:"enabled"`
+	Global  bool     `json:"global"`
+	Groups  []string `json:"groups"`
+	Models  []string `json:"models"`
+	// Channels limits the instance to those channel ids; empty runs it on
+	// every channel, like Global and Groups. A request whose channel is not
+	// settled yet does not run the instance until a later stage.
+	Channels []int `json:"channels,omitempty"`
+	// ExcludeChannels removes channels from the instance's other scopes.
+	ExcludeChannels []int `json:"exclude_channels,omitempty"`
+	// ManagedBy marks an instance a host policy owns; the instance editor
+	// must not edit it. Empty means an administrator created it.
+	ManagedBy string          `json:"managed_by,omitempty"`
+	Config    json.RawMessage `json:"config"`
 }
 
 // Instances is the stored instance list. Every load replaces the whole list

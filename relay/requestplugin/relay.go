@@ -74,6 +74,10 @@ func SubmitIngress(c *gin.Context, format types.RelayFormat, model string) (bool
 func (p *Plan) ingress(c *gin.Context, format types.RelayFormat, model string) (bool, []relaycommon.RequestPluginStep, []relaycommon.RequestPluginRecord, *types.NewAPIError) {
 	c.Set(planContextKey, p)
 	group := requestGroup(c)
+	// The distributor has settled a channel before this stage on HTTP; a
+	// channel-scoped instance joins only then.
+	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	p.SetChannel(channelID)
 	p.capture(c, group, model, nil)
 	if len(p.scope(StageIngress, group, model, nil)) == 0 {
 		return false, nil, nil, nil
@@ -81,15 +85,16 @@ func (p *Plan) ingress(c *gin.Context, format types.RelayFormat, model string) (
 	read := readStageBody(c)
 	user, token := requester(c)
 	outcome := p.Run(c.Request.Context(), Call{
-		Stage:  StageIngress,
-		Format: string(format),
-		Path:   c.Request.URL.Path,
-		Model:  model,
-		Group:  group,
-		User:   user,
-		Token:  token,
-		Body:   read.body,
-		form:   read.form,
+		Stage:     StageIngress,
+		Format:    string(format),
+		Path:      c.Request.URL.Path,
+		Model:     model,
+		Group:     group,
+		ChannelID: channelID,
+		User:      user,
+		Token:     token,
+		Body:      read.body,
+		form:      read.form,
 	})
 	steps := auditSteps(outcome)
 	if apiErr := settle(c, outcome); apiErr != nil {
@@ -422,11 +427,16 @@ func PassThrough(c *gin.Context, info *relaycommon.RelayInfo, storage common.Bod
 
 func attemptCall(c *gin.Context, info *relaycommon.RelayInfo) Call {
 	call := Call{
-		Format:  string(info.GetFinalRequestRelayFormat()),
-		Path:    c.Request.URL.Path,
-		Model:   info.OriginModelName,
-		Group:   requestGroup(c),
-		Attempt: info.RetryIndex,
+		Format:    string(info.GetFinalRequestRelayFormat()),
+		Path:      c.Request.URL.Path,
+		Model:     info.OriginModelName,
+		Group:     requestGroup(c),
+		Attempt:   info.RetryIndex,
+		ChannelID: info.ChannelId,
+	}
+	if plan := planOf(c); plan != nil {
+		// A retry may settle another channel; its scoped instances follow.
+		plan.SetChannel(info.ChannelId)
 	}
 	if plan := planOf(c); plan != nil && plan.submission != nil {
 		call.Format = plan.submission.format
@@ -487,6 +497,21 @@ func settle(c *gin.Context, outcome Outcome) *types.NewAPIError {
 		}
 	}
 	if rejected := outcome.Rejected; rejected != nil {
+		// A sensitive-word rejection keeps the fork's client contract: its
+		// own error code, no log row, no appended plugin code, and the
+		// matched words only when the plugin disclosed them.
+		if rejected.Code == string(types.ErrorCodeSensitiveWordsDetected) {
+			service.RequestPolicy(c).AddEvent(service.PolicyEvent{ErrorCode: string(types.ErrorCodeSensitiveWordsDetected), ErrorSource: "local", Decision: service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "global"}, Health: "unchanged"})
+			message := rejected.Message
+			if message == "" {
+				message = i18n.T(c, i18n.MsgRelayRequestRejected)
+			}
+			options := []types.NewAPIErrorOptions{types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog()}
+			if rejected.Disclose {
+				options = append(options, types.ErrOptionWithSensitiveWordsDisclosure())
+			}
+			return types.NewErrorWithStatusCode(errors.New(message), types.ErrorCodeSensitiveWordsDetected, http.StatusBadRequest, options...)
+		}
 		service.RequestPolicy(c).AddEvent(service.PolicyEvent{ErrorCode: string(types.ErrorCodeRequestRejected), ErrorSource: "local", Decision: service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "plugin"}, Health: "unchanged"})
 		message := rejected.Message
 		if message == "" {

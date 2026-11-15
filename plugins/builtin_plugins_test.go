@@ -23,6 +23,7 @@ var requestPluginHooks = map[string][]string{
 	"param-override":     {"outbound"},
 	"request-filter":     {"ingress", "egress", "reply"},
 	"request-redact":     {"ingress", "egress", "reply"},
+	"request-sensitive":  {"ingress"},
 }
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {

@@ -379,6 +379,13 @@ func InitResources() error {
 		// 同步阶段保留旧路径，等敏感词迁移到 request plugin 后再启用。
 	}
 	model.InitOptionMap()
+	if common.IsMasterNode {
+		// The options are loaded now, so the policy instances can be built
+		// from the word list an existing installation still keeps there.
+		if err := service.MigrateSensitivePolicy(); err != nil {
+			common.SysError(common.LogText("failed to migrate sensitive policy: %s", err.Error()))
+		}
+	}
 
 	// 清理旧的磁盘缓存文件
 	common.CleanupOldCacheFiles()

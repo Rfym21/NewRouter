@@ -46,6 +46,17 @@ func SocketIngress(c *gin.Context, format types.RelayFormat) (bool, []relaycommo
 	return plan.ingress(c, format, common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
 }
 
+// SocketIngressChannel runs the ingress hooks a Responses WebSocket response
+// brings once its channel is restored, which the connection-level
+// SocketIngress cannot scope yet. Instances that already ran are skipped.
+func SocketIngressChannel(c *gin.Context, format types.RelayFormat) (bool, []relaycommon.RequestPluginStep, []relaycommon.RequestPluginRecord, *types.NewAPIError) {
+	plan := planOf(c)
+	if plan == nil {
+		return false, nil, nil, nil
+	}
+	return plan.ingress(c, format, common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
+}
+
 // SocketResponse is the reply check and the report capture of one response
 // of a Responses WebSocket: the events of the response go to the client
 // through it.
@@ -69,7 +80,7 @@ func ResponsesSocket(c *gin.Context, info *relaycommon.RelayInfo, send func([]by
 	plan.capture(c, call.Group, call.Model, call.Bound)
 	socket := &SocketResponse{capture: plan.response, send: send}
 	if plan.replies {
-		if instances := plan.scope(StageReply, call.Group, call.Model, call.Bound); len(instances) > 0 {
+		if instances := plan.scopeForChannel(StageReply, call.Group, call.Model, call.Bound, call.ChannelID); len(instances) > 0 {
 			call.Format = string(types.RelayFormatOpenAIResponses)
 			check := newReplyCheck(c.Request.Context(), plan, instances)
 			check.call, check.stream = call, true
@@ -232,12 +243,12 @@ func NewRealtime(c *gin.Context, info *relaycommon.RelayInfo, toClient, toTarget
 	}
 	call := attemptCall(c, info)
 	r := &Realtime{c: c, ctx: c.Request.Context(), plan: plan, request: c.GetString(common.RequestIdKey), toClient: toClient, toTarget: toTarget, responses: map[string]*realtimeResponse{}}
-	r.ingress = plan.scope(StageIngress, call.Group, call.Model, call.Bound)
+	r.ingress = plan.scopeForChannel(StageIngress, call.Group, call.Model, call.Bound, call.ChannelID)
 	if plan.replies {
-		r.reply = plan.scope(StageReply, call.Group, call.Model, call.Bound)
+		r.reply = plan.scopeForChannel(StageReply, call.Group, call.Model, call.Bound, call.ChannelID)
 	}
 	if plan.reports {
-		for _, instance := range plan.scope(jsplugin.ReportHook, call.Group, call.Model, call.Bound) {
+		for _, instance := range plan.scopeForChannel(jsplugin.ReportHook, call.Group, call.Model, call.Bound, call.ChannelID) {
 			r.reports = append(r.reports, reportTarget{plugin: plan.plugins[instance.Plugin], instance: instance})
 		}
 	}

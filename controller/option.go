@@ -426,6 +426,12 @@ func UpdateOption(c *gin.Context) {
 		}
 		return
 	}
+	// A changed word list or switch must reach the managed policy instances.
+	if isSensitivePolicyOption(option.Key) {
+		if err := service.RebuildSensitivePolicy(); err != nil {
+			common.SysError(common.LogText("failed to rebuild sensitive policy: %s", err.Error()))
+		}
+	}
 	// 出于安全考虑只记录被修改的配置项名称，不记录配置值（可能含密钥等敏感信息）。
 	recordManageAudit(c, "option.update", map[string]any{
 		"key": option.Key,
@@ -434,4 +440,15 @@ func UpdateOption(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
+}
+
+// isSensitivePolicyOption reports the options the managed sensitive-word
+// policy instances are built from.
+func isSensitivePolicyOption(key string) bool {
+	switch key {
+	case "CheckSensitiveEnabled", "CheckSensitiveOnPromptEnabled", "SensitiveWords", "SensitiveErrorReturnWordsEnabled":
+		return true
+	default:
+		return false
+	}
 }

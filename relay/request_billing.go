@@ -37,7 +37,9 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 	if sensitiveCheckEnabled {
 		effectiveSensitiveWords = channelSetting.EffectiveSensitiveWords(globalSensitiveWords)
 	}
-	needSensitiveCheck := len(effectiveSensitiveWords) > 0
+	// The request-plugin policy takes over once its managed instances exist;
+	// the old check stays as the rollback path until then.
+	needSensitiveCheck := len(effectiveSensitiveWords) > 0 && !service.HasManagedSensitivePolicy()
 	meta := &types.TokenCountMeta{TokenType: types.TokenTypeTokenizer}
 	if info.Request != nil && (needSensitiveCheck || constant.CountToken) {
 		meta = info.Request.GetTokenCountMeta()

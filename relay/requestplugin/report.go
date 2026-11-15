@@ -106,7 +106,7 @@ func (w *responseCapture) Unwrap() http.ResponseWriter {
 // the channel selection settled. A capture already started stays. On a
 // Responses WebSocket the capture keeps the events the session sends.
 func (p *Plan) capture(c *gin.Context, group, model string, bound []string) {
-	if !p.reports || p.response != nil || len(p.scope(jsplugin.ReportHook, group, model, bound)) == 0 {
+	if !p.reports || p.response != nil || len(p.scopeForChannel(jsplugin.ReportHook, group, model, bound, common.GetContextKeyInt(c, constant.ContextKeyChannelId))) == 0 {
 		return
 	}
 	if p.socket {
@@ -238,7 +238,7 @@ func Report(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInf
 		call, pluginRecord = attemptCall(c, info), info.RequestPluginRecord
 	}
 	var targets []reportTarget
-	for _, instance := range plan.scope(jsplugin.ReportHook, call.Group, call.Model, call.Bound) {
+	for _, instance := range plan.scopeForChannel(jsplugin.ReportHook, call.Group, call.Model, call.Bound, call.ChannelID) {
 		if plugin := plan.plugins[instance.Plugin]; plugin != nil && slices.Contains(plugin.TransformHooks(), jsplugin.ReportHook) {
 			targets = append(targets, reportTarget{plugin: plugin, instance: instance})
 		}

@@ -64,6 +64,9 @@ func UpdateRequestPluginInstances(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
+	// A whole-list save must not drop or reshape the instances a host policy
+	// owns: restore their saved form and append those the client left out.
+	request.Instances = preserveManagedRequestPluginInstances(request.Instances)
 	instances, err := normalizeRequestPluginInstances(request.Instances)
 	if err != nil {
 		common.ApiErrorStatus(c, http.StatusBadRequest, err)
@@ -83,6 +86,34 @@ func UpdateRequestPluginInstances(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{"instances": instances})
+}
+
+// preserveManagedRequestPluginInstances keeps the instances a host policy
+// owns in the list they are saved with: a client may reorder or omit them,
+// but not change their scope or ownership.
+func preserveManagedRequestPluginInstances(instances []request_plugin_setting.Instance) []request_plugin_setting.Instance {
+	managed := make(map[string]request_plugin_setting.Instance)
+	for _, instance := range request_plugin_setting.GetInstances() {
+		if instance.ManagedBy != "" {
+			managed[instance.ID] = instance
+		}
+	}
+	if len(managed) == 0 {
+		return instances
+	}
+	kept := make(map[string]bool, len(managed))
+	for index := range instances {
+		if current, ok := managed[instances[index].ID]; ok {
+			instances[index] = current
+			kept[current.ID] = true
+		}
+	}
+	for _, instance := range request_plugin_setting.GetInstances() {
+		if instance.ManagedBy != "" && !kept[instance.ID] {
+			instances = append(instances, instance)
+		}
+	}
+	return instances
 }
 
 // normalizeRequestPluginInstances checks an instance list and returns it as

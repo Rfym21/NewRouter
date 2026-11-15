@@ -25,6 +25,7 @@ import (
 	"new-router/model"
 	"new-router/pkg/jsplugin"
 	"new-router/pkg/requestpatch"
+	"new-router/plugins"
 	relaycommon "new-router/relay/common"
 	relayconstant "new-router/relay/constant"
 	"new-router/relaykit/dto"
@@ -144,6 +145,54 @@ func TestPlanScopeOrder(t *testing.T) {
 	assert.Equal(t, []string{"global", "group", "bound"}, ids(StageOutbound, "vip", []string{"bound", "global", "unknown", "gone", "bound"}))
 	assert.Equal(t, []string{"global", "egress", "group"}, ids(StageEgress, "vip", nil))
 	assert.Equal(t, []string{"global"}, ids(StageIngress, "default", nil))
+}
+
+func TestPlanScopeChannelInstances(t *testing.T) {
+	setupPlugins(t, `[
+		{"id":"global","name":"Global","plugin":"rp-stages","enabled":true,"global":true,"exclude_channels":[3]},
+		{"id":"ch2","name":"Ch2","plugin":"rp-stages","enabled":true,"channels":[2]},
+		{"id":"both","name":"Both","plugin":"rp-stages","enabled":true,"global":true,"channels":[2],"exclude_channels":[2]},
+		{"id":"ch9","name":"Ch9","plugin":"rp-stages","enabled":true,"channels":[9]}
+	]`)
+	plan := NewPlan()
+	require.NotNil(t, plan)
+	ids := func(channelID int) []string {
+		var scoped []string
+		for _, instance := range plan.scopeForChannel(StageOutbound, "default", "gpt-4o", nil, channelID) {
+			scoped = append(scoped, instance.ID)
+		}
+		return scoped
+	}
+
+	// A channel-scoped instance waits until the request settles a channel.
+	assert.Equal(t, []string{"global"}, ids(0))
+	// Channel instances run after the global ones; a channel in exclude is out
+	// of every other scope, and an instance narrowed to a channel never runs
+	// elsewhere.
+	assert.Equal(t, []string{"global", "ch2"}, ids(2))
+	assert.Empty(t, ids(3))
+	assert.Equal(t, []string{"global", "ch9"}, ids(9))
+}
+
+func TestSensitiveRejectionKeepsForkContract(t *testing.T) {
+	source, err := plugins.Source("request-sensitive")
+	require.NoError(t, err)
+	plugin, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = jsplugin.DefaultRegistry.Unregister(plugin.Meta.Key) })
+	setupPlugins(t, `[
+		{"id":"sensitive","name":"Sensitive","plugin":"request-sensitive","enabled":true,"global":true,
+		 "config":{"keywords":"secret\nhidden","returnWords":true}}
+	]`)
+
+	c := newContext(`{"messages":[{"role":"user","content":"please keep this secret"}]}`, "default")
+	_, _, apiErr := Ingress(c, types.RelayFormatOpenAI)
+	require.NotNil(t, apiErr)
+	// The fork's client contract: the old error code with the matched words,
+	// not the generic request_rejected a plugin rejection would produce.
+	assert.Equal(t, types.ErrorCodeSensitiveWordsDetected, apiErr.GetErrorCode())
+	assert.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Err.Error(), "secret")
 }
 
 func TestOutboundEffectsAndAudit(t *testing.T) {

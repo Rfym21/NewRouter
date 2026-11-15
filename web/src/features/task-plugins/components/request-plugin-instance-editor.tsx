@@ -251,6 +251,16 @@ function InstanceEditorDialog(props: RequestPluginInstanceEditorProps) {
     global: scope === 'all',
     groups: scope === 'groups' ? groups : [],
     models: modelScope === 'chosen' ? models : [],
+    // Host-managed scopes have no editor controls and must survive a save.
+    ...(props.instance?.channels?.length
+      ? { channels: props.instance.channels }
+      : {}),
+    ...(props.instance?.exclude_channels?.length
+      ? { exclude_channels: props.instance.exclude_channels }
+      : {}),
+    ...(props.instance?.managed_by
+      ? { managed_by: props.instance.managed_by }
+      : {}),
     config,
   })
 

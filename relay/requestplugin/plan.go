@@ -93,6 +93,18 @@ type Plan struct {
 	submission *submission
 	// media is the attachment text the request's hooks read.
 	media requestMedia
+	// channelID is the channel the request settled on, 0 before selection.
+	// Channel-scoped instances join the scope only once it is known.
+	channelID int
+}
+
+// SetChannel records the channel the request settled on, so channel-scoped
+// instances join the scope. An attempt that settles another channel sets it
+// again before running its stages.
+func (p *Plan) SetChannel(id int) {
+	if p != nil && id != 0 {
+		p.channelID = id
+	}
 }
 
 // NewPlan takes the plan of a new request: nil when no enabled instance has
@@ -171,11 +183,17 @@ func newPlanOf(instances []request_plugin_setting.Instance) *Plan {
 }
 
 // scope returns the instances that run at stage for a request for model, in
-// order: the global ones, then those of group, then the channel's bound ids;
-// each once. One whose plugin lacks the stage hook does not run, nor one whose
-// models leave out model. An unavailable plugin's instance is in scope at
-// ingress only, where it fails the request.
+// order: the global ones, then those of group, then the channel's bound ids,
+// then the channel-scoped ones; each once. One whose plugin lacks the stage
+// hook does not run, nor one whose models leave out model. An unavailable
+// plugin's instance is in scope at ingress only, where it fails the request.
 func (p *Plan) scope(stage, group, model string, bound []string) []*request_plugin_setting.Instance {
+	return p.scopeForChannel(stage, group, model, bound, p.channelID)
+}
+
+// scopeForChannel is scope for a request whose channel may differ from the
+// plan's, as a dry run's does.
+func (p *Plan) scopeForChannel(stage, group, model string, bound []string, channelID int) []*request_plugin_setting.Instance {
 	if p == nil {
 		return nil
 	}
@@ -183,6 +201,15 @@ func (p *Plan) scope(stage, group, model string, bound []string) []*request_plug
 	var scoped []*request_plugin_setting.Instance
 	add := func(instance *request_plugin_setting.Instance) {
 		if slices.Contains(scoped, instance) {
+			return
+		}
+		// Channels narrows an instance even when Global or Groups also match;
+		// ExcludeChannels removes the channel from every other scope. An
+		// instance limited to channels waits until the request settles one.
+		if len(instance.Channels) > 0 && !slices.Contains(instance.Channels, channelID) {
+			return
+		}
+		if channelID != 0 && slices.Contains(instance.ExcludeChannels, channelID) {
 			return
 		}
 		if plugin := p.plugins[instance.Plugin]; plugin == nil && stage != StageIngress || plugin != nil && !slices.Contains(plugin.TransformHooks(), stage) {
@@ -215,6 +242,15 @@ func (p *Plan) scope(stage, group, model string, bound []string) []*request_plug
 			}
 		}
 	}
+	// Channel-scoped instances run after the channel's bound ones, so a
+	// channel policy sees their result.
+	if channelID != 0 {
+		for i := range p.instances {
+			if slices.Contains(p.instances[i].Channels, channelID) {
+				add(&p.instances[i])
+			}
+		}
+	}
 	return scoped
 }
 
@@ -231,6 +267,8 @@ type Call struct {
 	UpstreamModel string
 	Group         string
 	Channel       *jsplugin.TransformChannel
+	// ChannelID is the settled channel id, 0 before selection.
+	ChannelID int
 	// Bound are the channel's request_plugins ids; nil at the request's
 	// ingress, which runs before channel selection.
 	Bound []string
@@ -269,6 +307,8 @@ type Rejection struct {
 	Instance string `json:"instance"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+	// Disclose shows Message to the client; the host's own text otherwise.
+	Disclose bool `json:"disclose,omitempty"`
 }
 
 type Failure struct {
@@ -301,7 +341,11 @@ type Outcome struct {
 // rejection or failure of an instance whose plugin is not optional.
 func (p *Plan) Run(ctx context.Context, call Call) Outcome {
 	outcome := Outcome{Body: call.Body, Headers: call.Headers}
-	for _, instance := range p.scope(call.Stage, call.Group, call.Model, call.Bound) {
+	channelID := call.ChannelID
+	if channelID == 0 && call.Channel != nil {
+		channelID = call.Channel.ID
+	}
+	for _, instance := range p.scopeForChannel(call.Stage, call.Group, call.Model, call.Bound, channelID) {
 		if call.Stage == StageIngress {
 			if call.Late && p.ingressRan[instance.ID] {
 				continue
@@ -362,7 +406,7 @@ func (p *Plan) Run(ctx context.Context, call Call) Outcome {
 			outcome.Steps = append(outcome.Steps, step)
 			next.record.Rejected = &relaycommon.RequestPluginRejected{Code: next.reject.Code}
 			outcome.Record = append(outcome.Record, next.record)
-			outcome.Rejected = &Rejection{Instance: instance.ID, Code: next.reject.Code, Message: next.reject.Message}
+			outcome.Rejected = &Rejection{Instance: instance.ID, Code: next.reject.Code, Message: next.reject.Message, Disclose: next.reject.Disclose}
 			return outcome
 		}
 		step.Action, step.Effects = "continue", next.effects

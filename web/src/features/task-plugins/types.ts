@@ -142,6 +142,12 @@ export type RequestPluginInstance = {
   global: boolean
   groups: string[]
   models: string[]
+  /** Limits the instance to those channel ids; host-managed scopes only. */
+  channels?: number[]
+  /** Removes channels from the instance's other scopes. */
+  exclude_channels?: number[]
+  /** Marks an instance a host policy owns; the editor must not change it. */
+  managed_by?: string
   config: Record<string, unknown>
 }
 

@@ -106,6 +106,10 @@ export function RequestProcessing() {
     },
   })
   const instances = instancesQuery.data ?? []
+  // Host-managed instances are rebuilt by the server and have no editor
+  // controls; they stay out of the list but are saved back untouched.
+  const managedInstances = instances.filter((item) => item.managed_by)
+  const visibleInstances = instances.filter((item) => !item.managed_by)
   const plugins = pluginsQuery.data ?? []
   const instanceCounts: Record<string, number> = {}
   for (const instance of instances) {
@@ -116,9 +120,9 @@ export function RequestProcessing() {
   const busy = listMutation.isPending || editorMutation.isPending
 
   const move = (index: number, offset: -1 | 1) => {
-    const next = [...instances]
+    const next = [...visibleInstances]
     ;[next[index], next[index + offset]] = [next[index + offset], next[index]]
-    listMutation.mutate(next)
+    listMutation.mutate([...next, ...managedInstances])
   }
   const openEditor = (instance: RequestPluginInstance | 'new') => {
     editorMutation.reset()
@@ -134,7 +138,7 @@ export function RequestProcessing() {
         onRetry={() => void instancesQuery.refetch()}
       />
     )
-  } else if (instances.length === 0) {
+  } else if (visibleInstances.length === 0) {
     content = (
       <EmptyState
         title={t('No request processing yet')}
@@ -158,7 +162,7 @@ export function RequestProcessing() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {instances.map((instance, index) => {
+            {visibleInstances.map((instance, index) => {
               const plugin = plugins.find(
                 (item) => item.key === instance.plugin
               )
@@ -188,7 +192,7 @@ export function RequestProcessing() {
                       <Button
                         variant='ghost'
                         size='icon-sm'
-                        disabled={busy || index === instances.length - 1}
+                        disabled={busy || index === visibleInstances.length - 1}
                         aria-label={t('Move {{name}} down', {
                           name: instance.name,
                         })}
@@ -236,13 +240,14 @@ export function RequestProcessing() {
                       disabled={busy}
                       aria-label={t('Enable {{name}}', { name: instance.name })}
                       onCheckedChange={(checked) =>
-                        listMutation.mutate(
-                          instances.map((item, itemIndex) =>
+                        listMutation.mutate([
+                          ...visibleInstances.map((item, itemIndex) =>
                             itemIndex === index
                               ? { ...item, enabled: checked }
                               : item
-                          )
-                        )
+                          ),
+                          ...managedInstances,
+                        ])
                       }
                     />
                   </TableCell>
@@ -334,13 +339,16 @@ export function RequestProcessing() {
           const index =
             editing === 'new' || editing === null
               ? -1
-              : instances.findIndex((item) => item.id === editing.id)
+              : visibleInstances.findIndex((item) => item.id === editing.id)
           editorMutation.mutate(
             index < 0
-              ? [...instances, instance]
-              : instances.map((item, itemIndex) =>
-                  itemIndex === index ? instance : item
-                )
+              ? [...visibleInstances, instance, ...managedInstances]
+              : [
+                  ...visibleInstances.map((item, itemIndex) =>
+                    itemIndex === index ? instance : item
+                  ),
+                  ...managedInstances,
+                ]
           )
         }}
       />
@@ -366,9 +374,12 @@ export function RequestProcessing() {
         confirmText={t('Delete')}
         handleConfirm={() => {
           if (!deleteTarget) return
-          listMutation.mutate(
-            instances.filter((instance) => instance.id !== deleteTarget.id)
-          )
+          listMutation.mutate([
+            ...visibleInstances.filter(
+              (instance) => instance.id !== deleteTarget.id
+            ),
+            ...managedInstances,
+          ])
         }}
       />
     </>

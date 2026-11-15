@@ -151,6 +151,9 @@ type TransformResult struct {
 	Code     string
 	Message  string
 	RuleID   string
+	// Disclose asks the host to show Message to the client. Without it the
+	// host may replace the message with its own rejection text.
+	Disclose bool
 	// Notice is the plugin's plain explanation of what it did, which the host
 	// shows users in the log; nil when absent.
 	Notice LocalizedText
@@ -357,7 +360,7 @@ func decodeTransformResult(result any, effects json.RawMessage) (TransformResult
 			decoded.Effects = effects
 		}
 	case "reject":
-		if err := allowMembers(object, "", "action", "code", "message", "ruleId", "findings", "notice"); err != nil {
+		if err := allowMembers(object, "", "action", "code", "message", "ruleId", "findings", "notice", "disclose"); err != nil {
 			return TransformResult{}, err.Error()
 		}
 		code, err := optionalString(object, "code", "")
@@ -365,6 +368,13 @@ func decodeTransformResult(result any, effects json.RawMessage) (TransformResult
 			return TransformResult{}, "code must match " + transformCodePattern.String()
 		}
 		decoded.Code = code
+		if raw, ok := object["disclose"]; ok {
+			flag, isBool := raw.(bool)
+			if !isBool {
+				return TransformResult{}, "disclose must be a boolean"
+			}
+			decoded.Disclose = flag
+		}
 		for _, member := range []struct {
 			name   string
 			target *string

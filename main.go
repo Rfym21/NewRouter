@@ -385,6 +385,9 @@ func InitResources() error {
 		if err := service.MigrateSensitivePolicy(); err != nil {
 			common.SysError(common.LogText("failed to migrate sensitive policy: %s", err.Error()))
 		}
+		if err := service.MigrateAnonymizationPolicy(); err != nil {
+			common.SysError(common.LogText("failed to migrate anonymization policy: %s", err.Error()))
+		}
 	}
 
 	// 清理旧的磁盘缓存文件

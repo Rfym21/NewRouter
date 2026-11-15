@@ -427,10 +427,8 @@ func UpdateOption(c *gin.Context) {
 		return
 	}
 	// A changed word list or switch must reach the managed policy instances.
-	if isSensitivePolicyOption(option.Key) {
-		if err := service.RebuildSensitivePolicy(); err != nil {
-			common.SysError(common.LogText("failed to rebuild sensitive policy: %s", err.Error()))
-		}
+	if isSensitivePolicyOption(option.Key) || isAnonymizationPolicyOption(option.Key) {
+		rebuildManagedPolicies()
 	}
 	// 出于安全考虑只记录被修改的配置项名称，不记录配置值（可能含密钥等敏感信息）。
 	recordManageAudit(c, "option.update", map[string]any{
@@ -450,5 +448,27 @@ func isSensitivePolicyOption(key string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// isAnonymizationPolicyOption reports the options the managed anonymization
+// policy instances are built from.
+func isAnonymizationPolicyOption(key string) bool {
+	switch key {
+	case "AnonymizationEnabled", "AnonymizationStableSurrogates", "AnonymizationStrictContextEnabled", setting.AnonymizationRulesOptionKey:
+		return true
+	default:
+		return false
+	}
+}
+
+// rebuildManagedPolicies projects the option and channel state into the
+// request-plugin instances a host policy owns.
+func rebuildManagedPolicies() {
+	if err := service.RebuildSensitivePolicy(); err != nil {
+		common.SysError(common.LogText("failed to rebuild sensitive policy: %s", err.Error()))
+	}
+	if err := service.RebuildAnonymizationPolicy(); err != nil {
+		common.SysError(common.LogText("failed to rebuild anonymization policy: %s", err.Error()))
 	}
 }

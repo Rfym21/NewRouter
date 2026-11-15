@@ -167,6 +167,12 @@ func normalizeRequestPluginInstances(instances []request_plugin_setting.Instance
 			return nil, common.NewMessage("Request plugin instance {{name}} lists more than {{max}} models", map[string]any{"name": instance.Name, "max": maxRequestPluginModels})
 		}
 		instance.Models = models
+		// A host-managed instance carries a config the host wrote; its plugin
+		// may be built in and need not be listed among the selectable ones.
+		if instance.ManagedBy != "" {
+			normalized = append(normalized, instance)
+			continue
+		}
 		if len(instance.Config) == 0 || string(instance.Config) == "null" {
 			instance.Config = json.RawMessage("{}")
 		}

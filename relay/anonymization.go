@@ -3,7 +3,9 @@ package relay
 import (
 	"context"
 	"fmt"
+	"new-router/common"
 	"new-router/model"
+	"new-router/service"
 
 	"new-router/pkg/anonymizer"
 	relaycommon "new-router/relay/common"
@@ -33,7 +35,11 @@ func shouldAnonymizeAttempt(c *gin.Context, info *relaycommon.RelayInfo) bool {
 			}
 		}
 	}
-	enabled := info.ChannelSetting.ShouldAnonymize(model.CurrentRequestPolicy().Options["AnonymizationEnabled"] == "true")
+	enabledDefault := model.CurrentRequestPolicy().Options["AnonymizationEnabled"] == "true"
+	if managed, err := service.ManagedAnonymizationPolicyFor(info.ChannelId); err == nil && managed.Managed {
+		enabledDefault = managed.EnabledByDefault
+	}
+	enabled := info.ChannelSetting.ShouldAnonymize(enabledDefault)
 	if c != nil {
 		c.Set(anonymizationDecisionKey, anonymizationDecision{userID: info.UserId, tokenID: info.TokenId, channelID: info.ChannelId, enabled: enabled})
 	}
@@ -52,10 +58,25 @@ func anonymizerSession(c *gin.Context, info *relaycommon.RelayInfo) *anonymizer.
 	// Responses/compact and signed histories can reuse their own mappings without
 	// sharing mutable vaults or originals with another user/token.
 	policy := model.CurrentRequestPolicy()
+	stable := policy.Options["AnonymizationStableSurrogates"] == "true"
+	strict := policy.Options["AnonymizationStrictContextEnabled"] == "true"
+	rules := policy.AnonymizationRules
+	managed, managedErr := service.ManagedAnonymizationPolicyFor(info.ChannelId)
+	if managedErr != nil {
+		// A broken managed instance falls back to the legacy options so a bad
+		// edit does not stop every anonymized request.
+		common.SysError(common.LogText("failed to read anonymization policy: %s", managedErr.Error()))
+	} else if managed.Managed {
+		stable = managed.StableSurrogates
+		strict = managed.StrictContext
+		if managed.Rules != nil {
+			rules = managed.Rules
+		}
+	}
 	session := anonymizer.NewSession(anonymizerEngagement(info), anonymizer.NewVault()).
-		WithRules(policy.AnonymizationRules).
-		WithStableSurrogates(policy.Options["AnonymizationStableSurrogates"] == "true").
-		WithStrictContinuation(policy.Options["AnonymizationStrictContextEnabled"] == "true")
+		WithRules(rules).
+		WithStableSurrogates(stable).
+		WithStrictContinuation(strict)
 	anonymizer.Attach(c, session)
 	anonymizer.AttachContinuation(c, info.UserId, info.TokenId)
 	return session

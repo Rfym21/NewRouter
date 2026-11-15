@@ -23,5 +23,21 @@ func UpdateRequestPolicy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	// The batch save is the console's main path, so it must refresh the
+	// managed policy instances the same way a single option update does.
+	if requestPolicyNeedsManagedRebuild(request.Options) {
+		rebuildManagedPolicies()
+	}
 	GetRequestPolicy(c)
+}
+
+// requestPolicyNeedsManagedRebuild reports whether these options feed a
+// managed request-plugin policy.
+func requestPolicyNeedsManagedRebuild(options map[string]string) bool {
+	for key := range options {
+		if isSensitivePolicyOption(key) || isAnonymizationPolicyOption(key) {
+			return true
+		}
+	}
+	return false
 }

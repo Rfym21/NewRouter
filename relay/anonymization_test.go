@@ -16,6 +16,7 @@ import (
 	"new-router/relaykit/types"
 	"new-router/setting"
 	"new-router/setting/config"
+	"new-router/setting/request_plugin_setting"
 	"new-router/setting/runtime_setting"
 )
 
@@ -110,6 +111,26 @@ func TestAnonymizationDispatchUsesActualUpstreamFormat(t *testing.T) {
 			assert.Zero(t, anonymizer.FromContext(c).ReplacementCount(), "a successful disabled attempt cannot inherit an earlier count")
 		})
 	}
+}
+
+func TestManagedAnonymizationPolicyCarriesRules(t *testing.T) {
+	setAnonymizationAnalyzerConfig(t, "", "")
+	const instances = `[{"id":"rp_anonymizer_global","name":"anonymize","plugin":"builtin-anonymizer","enabled":true,"global":true,"groups":[],"models":[],"managed_by":"anonymization-policy","config":{"enabledByDefault":true,"stableSurrogates":false,"strictContext":false,"rules":"[{\"name\":\"tenant\",\"mode\":\"literal\",\"pattern\":\"tenant-secret\",\"entity_type\":\"CUSTOM\",\"enabled\":true}]"}}]`
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: instances}))
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
+	})
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{UserId: 1, TokenId: 2, RelayMode: relayconstant.RelayModeChatCompletions, ChannelMeta: &relaycommon.ChannelMeta{}}
+	body := `{"messages":[{"role":"user","content":"tenant-secret and alice@private.example"}]}`
+	masked, err := anonymizeRelayRequestJSON(c, info, types.RelayFormatOpenAI, []byte(body))
+	require.NoError(t, err)
+	// The managed instance's custom rule runs in place of the legacy rule
+	// options; the built-in detectors still run alongside it.
+	assert.NotContains(t, string(masked), "tenant-secret")
+	assert.NotContains(t, string(masked), "alice@private.example")
 }
 
 func TestAnonymizationContinuationDefaultFallbackThroughRelay(t *testing.T) {

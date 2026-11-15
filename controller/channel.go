@@ -1109,10 +1109,8 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// A new channel may carry its own sensitive-word policy.
-	if err := service.RebuildSensitivePolicy(); err != nil {
-		common.SysError(common.LogText("failed to rebuild sensitive policy: %s", err.Error()))
-	}
+	// A new channel may carry its own sensitive-word or anonymization policy.
+	rebuildManagedPolicies()
 	createAudit := map[string]any{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -1167,10 +1165,9 @@ func DeleteChannel(c *gin.Context) {
 		service.RevokeDeletedChannelCredentials([]*model.Channel{existing})
 	}
 	model.InitChannelCache()
-	// Drop the deleted channel from the managed sensitive policy.
-	if err := service.RebuildSensitivePolicy(); err != nil {
-		common.SysError(common.LogText("failed to rebuild sensitive policy: %s", err.Error()))
-	}
+	// Drop the deleted channel from the managed sensitive-word and
+	// anonymization policies.
+	rebuildManagedPolicies()
 	if channelLookupFailed {
 		service.ResetProxyClientCache()
 	} else {
@@ -1214,6 +1211,8 @@ func DeleteDisabledChannel(c *gin.Context) {
 	model.InitChannelCache()
 	if rows > 0 {
 		service.ResetProxyClientCache()
+		// The managed policy instances name the channels they exclude.
+		rebuildManagedPolicies()
 	}
 	recordManageAudit(c, "channel.delete_disabled", map[string]any{
 		"count": rows,
@@ -1376,10 +1375,9 @@ func DeleteChannelBatch(c *gin.Context) {
 	}
 	service.RevokeDeletedChannelCredentials(revoked)
 	model.InitChannelCache()
-	// Drop the deleted channels from the managed sensitive policy.
-	if err := service.RebuildSensitivePolicy(); err != nil {
-		common.SysError(common.LogText("failed to rebuild sensitive policy: %s", err.Error()))
-	}
+	// Drop the deleted channels from the managed sensitive-word and
+	// anonymization policies.
+	rebuildManagedPolicies()
 	if deletedCount > 0 {
 		service.ResetProxyClientCache()
 	}
@@ -1650,10 +1648,9 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
-	// The channel's sensitive-word policy may have changed with the channel.
-	if err := service.RebuildSensitivePolicy(); err != nil {
-		common.SysError(common.LogText("failed to rebuild sensitive policy: %s", err.Error()))
-	}
+	// The channel's sensitive-word or anonymization policy may have changed
+	// with the channel.
+	rebuildManagedPolicies()
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
 	}

@@ -8,6 +8,7 @@ import (
 	"new-router/model"
 	"new-router/relaykit/dto"
 	"new-router/setting"
+	"new-router/setting/config"
 	"new-router/setting/request_plugin_setting"
 
 	"github.com/glebarez/sqlite"
@@ -29,6 +30,7 @@ func setupSensitivePolicyTestDB(t *testing.T) {
 	model.DB = db
 	common.OptionMap = map[string]string{}
 	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
 		model.DB = previousDB
 		common.OptionMap = previousOptions
 		_ = sqlDB.Close()

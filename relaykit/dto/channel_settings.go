@@ -272,6 +272,74 @@ func (c *ClaudeCodeSimulationConfig) Validate() error {
 	return nil
 }
 
+// CodexSimulationConfig controls the configurable Codex CLI request fingerprint.
+// Metadata values feed both client_metadata and the x-codex-turn-metadata header,
+// so only primitive values are accepted.
+type CodexSimulationConfig struct {
+	// Headers contains the header set. Values may use {session_id}, {thread_id},
+	// {installation_id}, {window_id}, {turn_metadata}, and {api_key} placeholders.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Metadata is merged into the default Codex client/turn metadata.
+	Metadata map[string]any `json:"metadata,omitempty"`
+	// System contains developer input messages prepended to the original input.
+	System []any `json:"system,omitempty"`
+}
+
+// Validate verifies that configured Codex simulation values can be sent upstream safely.
+func (c *CodexSimulationConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+
+	seenHeaders := make(map[string]struct{}, len(c.Headers))
+	for name, value := range c.Headers {
+		if !httpguts.ValidHeaderFieldName(name) {
+			return fmt.Errorf("codex_simulation.headers contains invalid header name %q", name)
+		}
+		if !httpguts.ValidHeaderFieldValue(value) {
+			return fmt.Errorf("codex_simulation.headers.%s contains an invalid header value", name)
+		}
+		normalizedName := strings.ToLower(name)
+		if _, exists := seenHeaders[normalizedName]; exists {
+			return fmt.Errorf("codex_simulation.headers contains duplicate header name %q", name)
+		}
+		seenHeaders[normalizedName] = struct{}{}
+	}
+
+	if c.Metadata != nil {
+		for _, key := range []string{"installation_id", "session_id", "thread_id", "turn_id", "window_id"} {
+			if value, exists := c.Metadata[key]; exists {
+				if _, ok := value.(string); !ok {
+					return fmt.Errorf("codex_simulation.metadata.%s must be a string", key)
+				}
+			}
+		}
+		sessionID, hasSessionID := c.Metadata["session_id"]
+		if hasSessionID {
+			value, ok := sessionID.(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("codex_simulation.metadata.session_id must be a non-empty string")
+			}
+		}
+		for key, value := range c.Metadata {
+			switch value.(type) {
+			case string, bool, float64, float32, int, int32, int64, uint, uint32, uint64:
+			default:
+				return fmt.Errorf("codex_simulation.metadata.%s must be a string, number, or boolean", key)
+			}
+		}
+	}
+
+	for i, block := range c.System {
+		value := reflect.ValueOf(block)
+		if !value.IsValid() || value.Kind() != reflect.Map || value.Type().Key().Kind() != reflect.String || value.Len() == 0 {
+			return fmt.Errorf("codex_simulation.system[%d] must be a non-empty object", i)
+		}
+	}
+
+	return nil
+}
+
 type ChannelOtherSettings struct {
 	VertexProjectID string `json:"vertex_project_id,omitempty"`
 	// VertexAPIVersion selects v1 (default) or v1beta1 for Google model endpoints.
@@ -325,12 +393,17 @@ type ChannelOtherSettings struct {
 	// ThinkingSignatureRectifierEnabled retries matching Claude signature errors (400 or 422)
 	// once after converting thinking to text, preserving tool calls and results on every channel.
 	ThinkingSignatureRectifierEnabled bool `json:"thinking_signature_rectifier_enabled,omitempty"`
-	// ClaudeCodeSimulationEnabled 渠道级 Claude Code 请求模拟开关，对 Claude 上游生效。
-	// 开启后为请求体补齐 metadata.user_id、system 前缀和默认工具定义；原生 Anthropic 追加完整模拟请求头，
-	// Vertex / AWS Claude 仅追加 anthropic-beta token。
+	// ClaudeCodeSimulationEnabled 渠道级 Claude Code 请求模拟开关。
+	// 对最终使用 Anthropic Messages 协议的上游生效：原生 Anthropic 追加完整模拟请求头，
+	// Vertex / AWS Claude 仅追加 anthropic-beta token，其余渠道由共享管线补齐非认证请求头与请求体。
 	ClaudeCodeSimulationEnabled bool `json:"claude_code_simulation_enabled,omitempty"`
 	// ClaudeCodeSimulation customizes simulated headers, metadata, and system blocks. Nil fields use defaults.
 	ClaudeCodeSimulation *ClaudeCodeSimulationConfig `json:"claude_code_simulation,omitempty"`
+	// CodexSimulationEnabled 渠道级 Codex CLI 请求模拟开关，对 OpenAI Responses 上游生效。
+	// 开启后补齐 Codex CLI 身份请求头、client_metadata 与响应请求体默认字段。
+	CodexSimulationEnabled bool `json:"codex_simulation_enabled,omitempty"`
+	// CodexSimulation customizes simulated headers, metadata, and developer messages. Nil fields use defaults.
+	CodexSimulation *CodexSimulationConfig `json:"codex_simulation,omitempty"`
 	// ResponsesEncryptedContentRectifierEnabled retries matching encrypted-reasoning errors
 	// (400 or 422) once for Responses upstreams on every channel, preserving tool calls and results.
 	ResponsesEncryptedContentRectifierEnabled bool `json:"responses_encrypted_content_rectifier_enabled,omitempty"`

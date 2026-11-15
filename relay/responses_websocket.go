@@ -26,6 +26,7 @@ import (
 	relaychannel "new-router/relay/channel"
 	relaycommon "new-router/relay/common"
 	"new-router/relay/helper"
+	"new-router/relay/simulation"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/service"
@@ -702,6 +703,10 @@ func buildResponsesWSCreatePayload(c *gin.Context, info *relaycommon.RelayInfo, 
 	jsonData, err := io.ReadAll(body)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
+	}
+	jsonData, err = simulation.ApplyBody(info, jsonData)
+	if err != nil {
+		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 	event, err := buildResponsesWSCreateEvent(jsonData, generate, streamID)
 	if err != nil {

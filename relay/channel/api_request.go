@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"new-router/relay/common"
 	"new-router/relay/constant"
 	"new-router/relay/helper"
+	"new-router/relay/simulation"
 	"new-router/relaykit/types"
 	"new-router/service"
 	"new-router/setting/operation_setting"
@@ -368,6 +370,10 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 }
 
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	requestBody, err := applySimulationBody(info, requestBody)
+	if err != nil {
+		return nil, err
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -383,6 +389,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
+	// Apply client fingerprint headers before administrator overrides so an
+	// explicit channel header rule always wins.
+	simulation.ApplyHeaders(info, &headers)
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	if err = ApplyHeaderOverride(info, c, req); err != nil {
@@ -393,6 +402,24 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
+}
+
+// applySimulationBody rewrites JSON request bodies for channel-level client
+// emulation. It reads only when a simulation applies, and returns a bytes.Reader
+// so net/http still derives ContentLength and GetBody for transport retries.
+func applySimulationBody(info *common.RelayInfo, requestBody io.Reader) (io.Reader, error) {
+	if requestBody == nil || !simulation.NeedsBodyRewrite(info) {
+		return requestBody, nil
+	}
+	body, err := service.ReadBufferedResponseBody(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("read request body for simulation failed: %w", err)
+	}
+	body, err = simulation.ApplyBody(info, body)
+	if err != nil {
+		return nil, fmt.Errorf("apply request simulation failed: %w", err)
+	}
+	return bytes.NewReader(body), nil
 }
 
 func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
@@ -443,6 +470,7 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
+	simulation.ApplyHeaders(info, &targetHeader)
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	headerOverride, err := processHeaderOverride(info, c, targetHeader)

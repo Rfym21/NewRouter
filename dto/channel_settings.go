@@ -20,6 +20,7 @@ const AwsKeyTypeAKSK = kit.AwsKeyTypeAKSK
 const AwsKeyTypeApiKey = kit.AwsKeyTypeApiKey
 
 type ClaudeCodeSimulationConfig = kit.ClaudeCodeSimulationConfig
+type CodexSimulationConfig = kit.CodexSimulationConfig
 type ChannelOtherSettings = kit.ChannelOtherSettings
 type FieldPassThroughRule = kit.FieldPassThroughRule
 

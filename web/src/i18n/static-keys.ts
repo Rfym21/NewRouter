@@ -392,6 +392,9 @@ export const STATIC_I18N_KEYS = [
   'Claude Code simulation headers must be a JSON object with string values',
   'Claude Code simulation metadata must contain device_id, account_uuid, and session_id strings',
   'Claude Code simulation system prompt must be a JSON array',
+  'Codex simulation headers must be a JSON object with string values',
+  'Codex simulation metadata must contain a non-empty session_id string when present',
+  'Codex simulation system prompt must be a JSON array',
 
   // Models constants
   'Exact Match',

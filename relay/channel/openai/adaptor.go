@@ -18,6 +18,7 @@ import (
 	"new-router/logger"
 	"new-router/relay/channel"
 	"new-router/relay/channel/ai360"
+	"new-router/relay/channel/claude"
 	"new-router/relay/channel/lingyiwanwu"
 	"new-router/relay/channel/openrouter"
 	"new-router/relaykit/dto"
@@ -42,6 +43,66 @@ type Adaptor struct {
 	ResponseFormat string
 }
 
+// isNativeClaudeTarget reports whether this channel can accept an Anthropic
+// Messages request without converting it to chat completions. OpenRouter gained
+// a native /v1/messages endpoint; Azure AI Foundry serves Claude deployments
+// under an /anthropic base URL.
+func isNativeClaudeTarget(info *relaycommon.RelayInfo) bool {
+	if info == nil || info.GetFinalRequestRelayFormat() != types.RelayFormatClaude {
+		return false
+	}
+	switch info.ChannelType {
+	case constant.ChannelTypeOpenRouter:
+		model := strings.ToLower(info.UpstreamModelName)
+		return strings.Contains(model, "claude") || strings.Contains(model, "anthropic")
+	case constant.ChannelTypeAzure:
+		return isAzureAnthropicBaseURL(info.ChannelBaseUrl)
+	default:
+		return false
+	}
+}
+
+func isAzureAnthropicBaseURL(baseURL string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseURL))
+	if lower == "" {
+		return false
+	}
+	lower = strings.TrimRight(lower, "/")
+	// A bare Foundry resource host defaults to the Anthropic route; any other
+	// path must opt in explicitly with /anthropic.
+	return strings.Contains(lower, "/anthropic") ||
+		strings.HasSuffix(lower, ".services.ai.azure.com")
+}
+
+func nativeClaudeRequestURL(info *relaycommon.RelayInfo) string {
+	base := strings.TrimRight(info.ChannelBaseUrl, "/")
+	if info.ChannelType == constant.ChannelTypeAzure && !strings.Contains(strings.ToLower(base), "/anthropic") {
+		base += "/anthropic"
+	}
+	lower := strings.ToLower(base)
+	if strings.HasSuffix(lower, "/v1/messages") {
+		return base
+	}
+	if strings.HasSuffix(lower, "/v1") {
+		return base + "/messages"
+	}
+	return base + "/v1/messages"
+}
+
+func applyNativeClaudeHeaders(c *gin.Context, header *http.Header) {
+	if header.Get("anthropic-version") == "" {
+		version := c.Request.Header.Get("anthropic-version")
+		if version == "" {
+			version = "2023-06-01"
+		}
+		header.Set("anthropic-version", version)
+	}
+	// Forward every anthropic-beta line as one comma-separated value.
+	if beta := strings.Join(c.Request.Header.Values("anthropic-beta"), ","); beta != "" {
+		header.Set("anthropic-beta", beta)
+	}
+}
+
 func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
 	result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAI, request)
 	if err != nil {
@@ -63,6 +124,9 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 	//if !strings.Contains(request.Model, "claude") {
 	//	return nil, fmt.Errorf("you are using openai channel type with path /v1/messages, only claude model supported convert, but got %s", request.Model)
 	//}
+	if isNativeClaudeTarget(info) {
+		return (&claude.Adaptor{}).ConvertClaudeRequest(c, info, request)
+	}
 	//if common.DebugEnabled {
 	//	bodyBytes := []byte(common.GetJsonString(request))
 	//	err := os.WriteFile(fmt.Sprintf("claude_request_%s.txt", c.GetString(common.RequestIdKey)), bodyBytes, 0644)
@@ -112,6 +176,9 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if isNativeClaudeTarget(info) {
+		return nativeClaudeRequestURL(info), nil
+	}
 	if info.RelayMode == relayconstant.RelayModeRealtime {
 		if after, ok := strings.CutPrefix(info.ChannelBaseUrl, "https://"); ok {
 			baseUrl := after
@@ -193,6 +260,9 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 	channel.SetupApiRequestHeader(info, c, header)
 	if info.ChannelType == constant.ChannelTypeAzure {
 		header.Set("api-key", info.ApiKey)
+		if isNativeClaudeTarget(info) {
+			applyNativeClaudeHeaders(c, header)
+		}
 		return nil
 	}
 	if info.ChannelType == constant.ChannelTypeOpenAI && "" != info.Organization {
@@ -246,6 +316,9 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 		if header.Get("X-OpenRouter-Title") == "" {
 			header.Set("X-OpenRouter-Title", "New Router")
 		}
+	}
+	if isNativeClaudeTarget(info) {
+		applyNativeClaudeHeaders(c, header)
 	}
 	return nil
 }
@@ -764,6 +837,9 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	if info != nil && info.GetFinalRequestRelayFormat() == types.RelayFormatClaude {
+		return (&claude.Adaptor{}).DoResponse(c, resp, info)
+	}
 	switch info.RelayMode {
 	case relayconstant.RelayModeRealtime:
 		err, usage = OpenaiRealtimeHandler(c, info)

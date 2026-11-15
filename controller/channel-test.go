@@ -433,6 +433,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			newAPIError: types.NewError(err, types.ErrorCodeConvertRequestFailed),
 		}
 	}
+	// Record the wire format so simulation sees the same final protocol as the
+	// relay path; otherwise a Codex channel test looks like chat completions.
+	relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 	jsonData, err := common.Marshal(convertedRequest)
 	if err != nil {
 		return testResult{

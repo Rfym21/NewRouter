@@ -559,6 +559,58 @@ export const CLAUDE_FIELD_PASSTHROUGH_TYPES = new Set([
   CHANNEL_TYPE_SGLANG,
 ])
 
+/**
+ * Channels whose upstream accepts native Anthropic Messages requests. The
+ * settings UI uses this capability set instead of reusing field-passthrough
+ * sets, which have different semantics.
+ */
+export const CLAUDE_SIMULATION_CHANNEL_TYPES = new Set([
+  3,
+  14,
+  20,
+  33,
+  41,
+  58,
+  59,
+  CHANNEL_TYPE_NEW_API,
+])
+
+/** AWS and Vertex only accept the anthropic-beta token, not the full header set. */
+export const CLAUDE_SIMULATION_BETA_ONLY_TYPES = new Set([33, 41])
+
+/** Channels whose upstream accepts OpenAI Responses requests. */
+export const CODEX_SIMULATION_CHANNEL_TYPES = new Set([
+  1,
+  3,
+  8,
+  20,
+  48,
+  57,
+  58,
+  59,
+  CHANNEL_TYPE_NEW_API,
+])
+
+/** The Codex adaptor owns authentication; simulation headers are auth-filtered. */
+export function supportsClaudeSimulation(type: number): boolean {
+  return CLAUDE_SIMULATION_CHANNEL_TYPES.has(type)
+}
+
+export function claudeSimulationShowsHeaders(type: number): boolean {
+  return (
+    CLAUDE_SIMULATION_CHANNEL_TYPES.has(type) &&
+    !CLAUDE_SIMULATION_BETA_ONLY_TYPES.has(type)
+  )
+}
+
+export function supportsCodexSimulation(type: number): boolean {
+  return CODEX_SIMULATION_CHANNEL_TYPES.has(type)
+}
+
+export function codexSimulationShowsHeaders(type: number): boolean {
+  return CODEX_SIMULATION_CHANNEL_TYPES.has(type)
+}
+
 export const TYPE_TO_KEY_PROMPT: Record<number, string> = {
   15: 'Format: APIKey|SecretKey',
   18: 'Format: APPID|APISecret|APIKey',

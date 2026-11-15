@@ -148,16 +148,17 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 		return nil, nil
 	} else {
 		claude.ApplyClaudeResponseUsageSettings(c, info)
+		var claudeBody []byte
 		if claude.ShouldApplyClaudeRequestBodySettings(info) && requestBody != nil {
-			bodyBytes, err := service.ReadBufferedResponseBody(requestBody)
+			claudeBody, err = service.ReadBufferedResponseBody(requestBody)
 			if err != nil {
 				return nil, fmt.Errorf("read aws claude request body failed: %w", err)
 			}
-			bodyBytes, err = claude.ApplyClaudeRequestBodySettings(c, info, bodyBytes)
+			claudeBody, err = claude.ApplyClaudeRequestBodySettings(c, info, claudeBody)
 			if err != nil {
 				return nil, err
 			}
-			requestBody = bytes.NewBuffer(bodyBytes)
+			requestBody = bytes.NewBuffer(claudeBody)
 		}
 
 		awsClaudeReq, err := formatRequest(requestBody, requestHeader)
@@ -171,7 +172,7 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 				Accept:      aws.String("application/json"),
 				ContentType: aws.String("application/json"),
 			}
-			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq)
+			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq, claudeBody)
 			if err != nil {
 				return nil, types.NewError(errors.Wrap(err, "marshal aws request fail"), types.ErrorCodeBadRequestBody)
 			}
@@ -183,7 +184,7 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 				Accept:      aws.String("application/json"),
 				ContentType: aws.String("application/json"),
 			}
-			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq)
+			awsReq.Body, err = buildAwsRequestBody(c, info, awsClaudeReq, claudeBody)
 			if err != nil {
 				return nil, types.NewError(errors.Wrap(err, "marshal aws request fail"), types.ErrorCodeBadRequestBody)
 			}
@@ -194,15 +195,20 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 }
 
 // buildAwsRequestBody prepares the payload for AWS requests, applying passthrough rules when enabled.
-func buildAwsRequestBody(c *gin.Context, info *relaycommon.RelayInfo, awsClaudeReq any) ([]byte, error) {
+// simulatedBody carries the already-rewritten Claude payload; pass-through must
+// not fall back to the original client storage or it silently drops the rewrite.
+func buildAwsRequestBody(c *gin.Context, info *relaycommon.RelayInfo, awsClaudeReq any, simulatedBody []byte) ([]byte, error) {
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
-		storage, err := common.GetBodyStorage(c)
-		if err != nil {
-			return nil, errors.Wrap(err, "get request body for pass-through fail")
-		}
-		body, err := storage.Bytes()
-		if err != nil {
-			return nil, errors.Wrap(err, "get request body bytes fail")
+		body := simulatedBody
+		if len(body) == 0 {
+			storage, err := common.GetBodyStorage(c)
+			if err != nil {
+				return nil, errors.Wrap(err, "get request body for pass-through fail")
+			}
+			body, err = storage.Bytes()
+			if err != nil {
+				return nil, errors.Wrap(err, "get request body bytes fail")
+			}
 		}
 		// Only model and stream are removed: the rest keeps the client's bytes
 		// and key order. The Doc reads body in place and never changes it.

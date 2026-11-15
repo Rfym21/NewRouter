@@ -160,6 +160,10 @@ import {
   FIELD_PLACEHOLDERS,
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
+  claudeSimulationShowsHeaders,
+  codexSimulationShowsHeaders,
+  supportsClaudeSimulation,
+  supportsCodexSimulation,
 } from '../../constants'
 import { useChannelKeyDisclosure } from '../../hooks/use-channel-key-disclosure'
 import {
@@ -209,6 +213,11 @@ import {
   CLAUDE_CODE_SIMULATION_DEFAULT_METADATA_JSON,
   CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON,
 } from '../../lib/claude-code-simulation'
+import {
+  CODEX_SIMULATION_DEFAULT_HEADERS_JSON,
+  CODEX_SIMULATION_DEFAULT_METADATA_JSON,
+  CODEX_SIMULATION_DEFAULT_SYSTEM_JSON,
+} from '../../lib/codex-simulation'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
@@ -358,6 +367,10 @@ const SENSITIVE_FORM_FIELDS = [
   'claude_code_simulation_headers',
   'claude_code_simulation_metadata',
   'claude_code_simulation_system',
+  'codex_simulation_enabled',
+  'codex_simulation_headers',
+  'codex_simulation_metadata',
+  'codex_simulation_system',
   'responses_encrypted_content_rectifier_enabled',
   'unify_request_response_model_name_enabled',
   'ollama_openai_chat',
@@ -3172,13 +3185,17 @@ export function ChannelMutateDrawer({
         </fieldset>
       </div>
 
-      {[14, 33, 41].includes(currentType) && (
+      {supportsClaudeSimulation(currentType) && (
         <div
           id='channel-custom-claudeAdvanced'
           className={sideDrawerSectionClassName('scroll-mt-4')}
         >
           <CardHeading
-            title={t('Claude Advanced Settings')}
+            title={
+              [14, 33, 41].includes(currentType)
+                ? t('Claude Advanced Settings')
+                : t('Claude Code simulation')
+            }
             icon={<Settings className='h-4 w-4' />}
           />
           {sensitiveLocked && (
@@ -3203,12 +3220,12 @@ export function ChannelMutateDrawer({
                         {t('Emulate Claude Code requests')}
                       </FormLabel>
                       <FormDescription>
-                        {currentType === 14
+                        {claudeSimulationShowsHeaders(currentType)
                           ? t(
                               'Add configurable Claude Code CLI headers, metadata, system prompts and default tools to upstream requests'
                             )
                           : t(
-                              'Add Claude Code metadata, system prompts and default tools to upstream requests'
+                              'Only the anthropic-beta header is added for this channel type.'
                             )}
                       </FormDescription>
                     </div>
@@ -3224,7 +3241,7 @@ export function ChannelMutateDrawer({
 
               {form.watch('claude_code_simulation_enabled') === true && (
                 <div className='space-y-5 px-4 py-4'>
-                  {currentType === 14 && (
+                  {claudeSimulationShowsHeaders(currentType) && (
                     <FormField
                       control={form.control}
                       name='claude_code_simulation_headers'
@@ -3360,180 +3377,378 @@ export function ChannelMutateDrawer({
                 </div>
               )}
 
-              <FormField
-                control={form.control}
-                name='force_cache_enabled'
-                render={({ field }) => (
-                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                    <div className='space-y-0.5'>
-                      <FormLabel className='text-sm'>
-                        {t('Claude Force Cache')}
-                      </FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Inject ephemeral cache_control when the request carries none'
-                        )}
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
+              {[14, 33, 41].includes(currentType) && (
+                <>
+                  <FormField
+                    control={form.control}
+                    name='force_cache_enabled'
+                    render={({ field }) => (
+                      <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                        <div className='space-y-0.5'>
+                          <FormLabel className='text-sm'>
+                            {t('Claude Force Cache')}
+                          </FormLabel>
+                          <FormDescription>
+                            {t(
+                              'Inject ephemeral cache_control when the request carries none'
+                            )}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
 
-              {form.watch('force_cache_enabled') === true && (
-                <FormField
-                  control={form.control}
-                  name='force_cache_ttl'
-                  render={({ field }) => (
-                    <FormItem className='space-y-3 px-4 py-3'>
-                      <FormLabel className='text-sm'>
-                        {t('Force Cache TTL')}
-                      </FormLabel>
-                      <FormControl>
-                        <RadioGroup
-                          value={field.value}
-                          onValueChange={field.onChange}
-                          className='grid gap-3 lg:grid-cols-2'
-                        >
-                          <div className='flex items-center gap-2'>
-                            <RadioGroupItem
-                              value='5m'
-                              id='force-cache-ttl-5m'
-                            />
-                            <Label
-                              htmlFor='force-cache-ttl-5m'
-                              className='cursor-pointer font-normal'
+                  {form.watch('force_cache_enabled') === true && (
+                    <FormField
+                      control={form.control}
+                      name='force_cache_ttl'
+                      render={({ field }) => (
+                        <FormItem className='space-y-3 px-4 py-3'>
+                          <FormLabel className='text-sm'>
+                            {t('Force Cache TTL')}
+                          </FormLabel>
+                          <FormControl>
+                            <RadioGroup
+                              value={field.value}
+                              onValueChange={field.onChange}
+                              className='grid gap-3 lg:grid-cols-2'
                             >
-                              {t('5 minutes (default)')}
-                            </Label>
-                          </div>
-                          <div className='flex items-center gap-2'>
-                            <RadioGroupItem
-                              value='1h'
-                              id='force-cache-ttl-1h'
-                            />
-                            <Label
-                              htmlFor='force-cache-ttl-1h'
-                              className='cursor-pointer font-normal'
-                            >
-                              {t('1 hour')}
-                            </Label>
-                          </div>
-                        </RadioGroup>
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
+                              <div className='flex items-center gap-2'>
+                                <RadioGroupItem
+                                  value='5m'
+                                  id='force-cache-ttl-5m'
+                                />
+                                <Label
+                                  htmlFor='force-cache-ttl-5m'
+                                  className='cursor-pointer font-normal'
+                                >
+                                  {t('5 minutes (default)')}
+                                </Label>
+                              </div>
+                              <div className='flex items-center gap-2'>
+                                <RadioGroupItem
+                                  value='1h'
+                                  id='force-cache-ttl-1h'
+                                />
+                                <Label
+                                  htmlFor='force-cache-ttl-1h'
+                                  className='cursor-pointer font-normal'
+                                >
+                                  {t('1 hour')}
+                                </Label>
+                              </div>
+                            </RadioGroup>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
                   )}
-                />
+
+                  <FormField
+                    control={form.control}
+                    name='force_cache_1h_enabled'
+                    render={({ field }) => (
+                      <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                        <div className='space-y-0.5'>
+                          <FormLabel className='text-sm'>
+                            {t('Force 1h Cache')}
+                          </FormLabel>
+                          <FormDescription>
+                            {t(
+                              'Rewrite every existing cache_control ttl to 1h'
+                            )}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='cache_1h_bill_as_5m_enabled'
+                    render={({ field }) => (
+                      <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                        <div className='space-y-0.5'>
+                          <FormLabel className='text-sm'>
+                            {t('Bill 1h Cache as 5m')}
+                          </FormLabel>
+                          <FormDescription>
+                            {t(
+                              'Fold 1h cache creation tokens into the 5m bucket for billing'
+                            )}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='cache_read_min_ratio_enabled'
+                    render={({ field }) => (
+                      <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                        <div className='space-y-0.5'>
+                          <FormLabel className='text-sm'>
+                            {t('Cache read/write ratio controller')}
+                          </FormLabel>
+                          <FormDescription>
+                            {t(
+                              'Enforce a minimum cache-read share of read plus write'
+                            )}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  {form.watch('cache_read_min_ratio_enabled') === true && (
+                    <FormField
+                      control={form.control}
+                      name='cache_read_min_ratio_percent'
+                      render={({ field }) => (
+                        <FormItem className='space-y-2 px-4 py-3'>
+                          <FormLabel className='text-sm'>
+                            {t('Minimum cache read ratio (%)')}
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={field.value ?? ''}
+                              onChange={(e) =>
+                                field.onChange(
+                                  Number.isNaN(e.target.valueAsNumber)
+                                    ? 0
+                                    : e.target.valueAsNumber
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+                </>
               )}
+            </div>
+          </fieldset>
+        </div>
+      )}
 
+      {supportsCodexSimulation(currentType) && (
+        <div
+          id='channel-custom-codexSimulation'
+          className={sideDrawerSectionClassName('scroll-mt-4')}
+        >
+          <CardHeading
+            title={t('Codex simulation')}
+            icon={<Settings className='h-4 w-4' />}
+          />
+          {sensitiveLocked && (
+            <Alert className='border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-50'>
+              <AlertDescription>
+                {t('No permission to perform this action')}
+              </AlertDescription>
+            </Alert>
+          )}
+          <fieldset
+            disabled={sensitiveLocked}
+            className='space-y-4 disabled:opacity-60'
+          >
+            <div className='divide-border space-y-0 divide-y border-y'>
               <FormField
                 control={form.control}
-                name='force_cache_1h_enabled'
+                name='codex_simulation_enabled'
                 render={({ field }) => (
                   <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
                     <div className='space-y-0.5'>
                       <FormLabel className='text-sm'>
-                        {t('Force 1h Cache')}
+                        {t('Emulate Codex requests')}
                       </FormLabel>
                       <FormDescription>
-                        {t('Rewrite every existing cache_control ttl to 1h')}
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='cache_1h_bill_as_5m_enabled'
-                render={({ field }) => (
-                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                    <div className='space-y-0.5'>
-                      <FormLabel className='text-sm'>
-                        {t('Bill 1h Cache as 5m')}
-                      </FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Fold 1h cache creation tokens into the 5m bucket for billing'
-                        )}
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='cache_read_min_ratio_enabled'
-                render={({ field }) => (
-                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
-                    <div className='space-y-0.5'>
-                      <FormLabel className='text-sm'>
-                        {t('Cache read/write ratio controller')}
-                      </FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Enforce a minimum cache-read share of read plus write'
-                        )}
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-
-              {form.watch('cache_read_min_ratio_enabled') === true && (
-                <FormField
-                  control={form.control}
-                  name='cache_read_min_ratio_percent'
-                  render={({ field }) => (
-                    <FormItem className='space-y-2 px-4 py-3'>
-                      <FormLabel className='text-sm'>
-                        {t('Minimum cache read ratio (%)')}
-                      </FormLabel>
-                      <FormControl>
-                        <Input
-                          type='number'
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={field.value ?? ''}
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.isNaN(e.target.valueAsNumber)
-                                ? 0
-                                : e.target.valueAsNumber
+                        {codexSimulationShowsHeaders(currentType)
+                          ? t(
+                              'Add configurable Codex CLI headers, metadata and developer prompts to upstream requests'
                             )
-                          }
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
+                          : t(
+                              'Headers are managed by the channel adaptor for this channel type.'
+                            )}
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              {form.watch('codex_simulation_enabled') === true && (
+                <div className='space-y-5 px-4 py-4'>
+                  {codexSimulationShowsHeaders(currentType) && (
+                    <FormField
+                      control={form.control}
+                      name='codex_simulation_headers'
+                      render={({ field }) => (
+                        <FormItem className='space-y-3'>
+                          <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                            <div className='space-y-1'>
+                              <FormLabel className='text-sm'>
+                                {t('Codex simulation headers')}
+                              </FormLabel>
+                              <FormDescription>
+                                {t(
+                                  'Headers applied when simulating Codex requests. Existing session and version headers are preserved.'
+                                )}
+                              </FormDescription>
+                            </div>
+                            <Button
+                              type='button'
+                              variant='ghost'
+                              size='sm'
+                              className='shrink-0'
+                              onClick={() =>
+                                field.onChange(
+                                  CODEX_SIMULATION_DEFAULT_HEADERS_JSON
+                                )
+                              }
+                              disabled={isSubmitting}
+                            >
+                              {t('Reset to default')}
+                            </Button>
+                          </div>
+                          <FormControl>
+                            <JsonCodeEditor
+                              value={field.value}
+                              onChange={field.onChange}
+                              disabled={isSubmitting}
+                              heightClassName='h-48 min-h-48 max-h-48'
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
                   )}
-                />
+
+                  <FormField
+                    control={form.control}
+                    name='codex_simulation_metadata'
+                    render={({ field }) => (
+                      <FormItem className='space-y-3 border-t pt-5'>
+                        <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                          <div className='space-y-1'>
+                            <FormLabel className='text-sm'>
+                              {t('Codex simulation metadata')}
+                            </FormLabel>
+                            <FormDescription>
+                              {t(
+                                'JSON object encoded as request metadata when the existing value is missing or invalid.'
+                              )}
+                            </FormDescription>
+                          </div>
+                          <Button
+                            type='button'
+                            variant='ghost'
+                            size='sm'
+                            className='shrink-0'
+                            onClick={() =>
+                              field.onChange(
+                                CODEX_SIMULATION_DEFAULT_METADATA_JSON
+                              )
+                            }
+                            disabled={isSubmitting}
+                          >
+                            {t('Reset to default')}
+                          </Button>
+                        </div>
+                        <FormControl>
+                          <JsonCodeEditor
+                            value={field.value}
+                            onChange={field.onChange}
+                            disabled={isSubmitting}
+                            heightClassName='h-44 min-h-44 max-h-44'
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='codex_simulation_system'
+                    render={({ field }) => (
+                      <FormItem className='space-y-3 border-t pt-5'>
+                        <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                          <div className='space-y-1'>
+                            <FormLabel className='text-sm'>
+                              {t('Codex simulation system prompt')}
+                            </FormLabel>
+                            <FormDescription>
+                              {t(
+                                'JSON array of developer messages prepended to simulated Codex requests.'
+                              )}
+                            </FormDescription>
+                          </div>
+                          <Button
+                            type='button'
+                            variant='ghost'
+                            size='sm'
+                            className='shrink-0'
+                            onClick={() =>
+                              field.onChange(
+                                CODEX_SIMULATION_DEFAULT_SYSTEM_JSON
+                              )
+                            }
+                            disabled={isSubmitting}
+                          >
+                            {t('Reset to default')}
+                          </Button>
+                        </div>
+                        <FormControl>
+                          <JsonCodeEditor
+                            value={field.value}
+                            onChange={field.onChange}
+                            disabled={isSubmitting}
+                            heightClassName='h-64 min-h-64 max-h-64'
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
               )}
             </div>
           </fieldset>
@@ -4725,16 +4940,22 @@ export function ChannelMutateDrawer({
                   render={({ field }) => (
                     <FormItem className='flex items-center justify-between'>
                       <div className='space-y-0.5'>
-                        <FormLabel>{t('Use Vertex AI v1beta1 endpoint')}</FormLabel>
+                        <FormLabel>
+                          {t('Use Vertex AI v1beta1 endpoint')}
+                        </FormLabel>
                         <FormDescription>
-                          {t('Switches Gemini and Imagen requests on this Vertex channel from v1 to v1beta1. Some features require v1beta1; check the Vertex AI documentation.')}
+                          {t(
+                            'Switches Gemini and Imagen requests on this Vertex channel from v1 to v1beta1. Some features require v1beta1; check the Vertex AI documentation.'
+                          )}
                         </FormDescription>
                       </div>
                       <FormControl>
                         <Switch
                           disabled={sensitiveLocked}
                           checked={field.value === 'v1beta1'}
-                          onCheckedChange={(checked) => field.onChange(checked ? 'v1beta1' : 'v1')}
+                          onCheckedChange={(checked) =>
+                            field.onChange(checked ? 'v1beta1' : 'v1')
+                          }
                         />
                       </FormControl>
                     </FormItem>

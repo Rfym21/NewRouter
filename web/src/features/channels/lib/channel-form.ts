@@ -30,6 +30,10 @@ import {
   FIELD_PASSTHROUGH_TYPES,
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
+  claudeSimulationShowsHeaders,
+  codexSimulationShowsHeaders,
+  supportsClaudeSimulation,
+  supportsCodexSimulation,
 } from '../constants'
 import type { Channel, ChannelSettings } from '../types'
 import {
@@ -49,6 +53,14 @@ import {
   CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM,
   CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON,
 } from './claude-code-simulation'
+import {
+  CODEX_SIMULATION_DEFAULT_HEADERS,
+  CODEX_SIMULATION_DEFAULT_HEADERS_JSON,
+  CODEX_SIMULATION_DEFAULT_METADATA,
+  CODEX_SIMULATION_DEFAULT_METADATA_JSON,
+  CODEX_SIMULATION_DEFAULT_SYSTEM,
+  CODEX_SIMULATION_DEFAULT_SYSTEM_JSON,
+} from './codex-simulation'
 import {
   fieldPassThroughRulesSchema,
   formatFieldPassThroughRules,
@@ -205,6 +217,35 @@ function isClaudeCodeSimulationSystem(value: string): boolean {
         (item) => isJsonObjectValue(item) && Object.keys(item).length > 0
       )
     )
+  } catch {
+    return false
+  }
+}
+
+function isCodexSimulationMetadata(value: string): boolean {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!isJsonObjectValue(parsed)) return false
+    const identityKeys = new Set([
+      'installation_id',
+      'session_id',
+      'thread_id',
+      'turn_id',
+      'window_id',
+    ])
+    return Object.entries(parsed).every(([key, item]) => {
+      if (
+        typeof item !== 'string' &&
+        typeof item !== 'number' &&
+        typeof item !== 'boolean'
+      ) {
+        return false
+      }
+      if (identityKeys.has(key) && typeof item !== 'string') {
+        return false
+      }
+      return key !== 'session_id' || (typeof item === 'string' && !!item.trim())
+    })
   } catch {
     return false
   }
@@ -434,6 +475,10 @@ export const channelFormSchema = z
     claude_code_simulation_headers: z.string(),
     claude_code_simulation_metadata: z.string(),
     claude_code_simulation_system: z.string(),
+    codex_simulation_enabled: z.boolean().optional(),
+    codex_simulation_headers: z.string(),
+    codex_simulation_metadata: z.string(),
+    codex_simulation_system: z.string(),
     // OpenAI/Azure Responses rectifier (stored in settings JSON)
     responses_encrypted_content_rectifier_enabled: z.boolean().optional(),
     // Unify request/response model name (stored in setting JSON, all upstreams)
@@ -447,11 +492,11 @@ export const channelFormSchema = z
   })
   .superRefine((data, ctx) => {
     if (
-      [14, 33, 41].includes(data.type) &&
+      supportsClaudeSimulation(data.type) &&
       data.claude_code_simulation_enabled === true
     ) {
       if (
-        data.type === 14 &&
+        claudeSimulationShowsHeaders(data.type) &&
         !isClaudeCodeSimulationHeaders(data.claude_code_simulation_headers)
       ) {
         addRequiredIssue(
@@ -474,6 +519,36 @@ export const channelFormSchema = z
           ctx,
           'claude_code_simulation_system',
           'Claude Code simulation system prompt must be a JSON array'
+        )
+      }
+    }
+
+    if (
+      supportsCodexSimulation(data.type) &&
+      data.codex_simulation_enabled === true
+    ) {
+      if (
+        codexSimulationShowsHeaders(data.type) &&
+        !isClaudeCodeSimulationHeaders(data.codex_simulation_headers)
+      ) {
+        addRequiredIssue(
+          ctx,
+          'codex_simulation_headers',
+          'Codex simulation headers must be a JSON object with string values'
+        )
+      }
+      if (!isCodexSimulationMetadata(data.codex_simulation_metadata)) {
+        addRequiredIssue(
+          ctx,
+          'codex_simulation_metadata',
+          'Codex simulation metadata must contain a non-empty session_id string when present'
+        )
+      }
+      if (!isClaudeCodeSimulationSystem(data.codex_simulation_system)) {
+        addRequiredIssue(
+          ctx,
+          'codex_simulation_system',
+          'Codex simulation system prompt must be a JSON array'
         )
       }
     }
@@ -688,6 +763,10 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   claude_code_simulation_headers: CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS_JSON,
   claude_code_simulation_metadata: CLAUDE_CODE_SIMULATION_DEFAULT_METADATA_JSON,
   claude_code_simulation_system: CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON,
+  codex_simulation_enabled: false,
+  codex_simulation_headers: CODEX_SIMULATION_DEFAULT_HEADERS_JSON,
+  codex_simulation_metadata: CODEX_SIMULATION_DEFAULT_METADATA_JSON,
+  codex_simulation_system: CODEX_SIMULATION_DEFAULT_SYSTEM_JSON,
   responses_encrypted_content_rectifier_enabled: false,
   unify_request_response_model_name_enabled: false,
   ollama_openai_chat: false,
@@ -831,6 +910,10 @@ export function transformChannelToFormDefaults(
   let claudeCodeSimulationMetadata =
     CLAUDE_CODE_SIMULATION_DEFAULT_METADATA_JSON
   let claudeCodeSimulationSystem = CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON
+  let codexSimulationEnabled = false
+  let codexSimulationHeaders = CODEX_SIMULATION_DEFAULT_HEADERS_JSON
+  let codexSimulationMetadata = CODEX_SIMULATION_DEFAULT_METADATA_JSON
+  let codexSimulationSystem = CODEX_SIMULATION_DEFAULT_SYSTEM_JSON
   let responsesEncryptedContentRectifierEnabled = false
   let bodyFieldPassThroughRules: ChannelFormValues['body_field_pass_through_rules'] =
     []
@@ -848,7 +931,8 @@ export function transformChannelToFormDefaults(
       const parsed = JSON.parse(channel.settings)
       vertexKeyType = parsed.vertex_key_type || 'json'
       vertexProjectId = parsed.vertex_project_id || ''
-      vertexApiVersion = parsed.vertex_api_version === 'v1beta1' ? 'v1beta1' : 'v1'
+      vertexApiVersion =
+        parsed.vertex_api_version === 'v1beta1' ? 'v1beta1' : 'v1'
       azureResponsesVersion = parsed.azure_responses_version || ''
       isEnterpriseAccount = parsed.openrouter_enterprise === true
       awsKeyType = parsed.aws_key_type || 'ak_sk'
@@ -888,6 +972,21 @@ export function transformChannelToFormDefaults(
         claudeCodeSimulationSystem = stringifyJsonValue(
           parsed.claude_code_simulation.system,
           CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON
+        )
+      }
+      codexSimulationEnabled = parsed.codex_simulation_enabled === true
+      if (isJsonObjectValue(parsed.codex_simulation)) {
+        codexSimulationHeaders = stringifyJsonValue(
+          parsed.codex_simulation.headers,
+          CODEX_SIMULATION_DEFAULT_HEADERS_JSON
+        )
+        codexSimulationMetadata = stringifyJsonValue(
+          parsed.codex_simulation.metadata,
+          CODEX_SIMULATION_DEFAULT_METADATA_JSON
+        )
+        codexSimulationSystem = stringifyJsonValue(
+          parsed.codex_simulation.system,
+          CODEX_SIMULATION_DEFAULT_SYSTEM_JSON
         )
       }
       responsesEncryptedContentRectifierEnabled =
@@ -979,6 +1078,10 @@ export function transformChannelToFormDefaults(
     claude_code_simulation_headers: claudeCodeSimulationHeaders,
     claude_code_simulation_metadata: claudeCodeSimulationMetadata,
     claude_code_simulation_system: claudeCodeSimulationSystem,
+    codex_simulation_enabled: codexSimulationEnabled,
+    codex_simulation_headers: codexSimulationHeaders,
+    codex_simulation_metadata: codexSimulationMetadata,
+    codex_simulation_system: codexSimulationSystem,
     responses_encrypted_content_rectifier_enabled:
       responsesEncryptedContentRectifierEnabled,
     ollama_openai_chat: ollamaOpenAIChat,
@@ -1197,9 +1300,10 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   settingsObj.responses_encrypted_content_rectifier_enabled =
     formData.responses_encrypted_content_rectifier_enabled === true
 
-  // Claude-capable upstreams (Anthropic 14, AWS Bedrock 33, Vertex 41): cache controls.
-  const CLAUDE_CAPABLE_CHANNEL_TYPES = [14, 33, 41]
-  if (CLAUDE_CAPABLE_CHANNEL_TYPES.includes(formData.type)) {
+  // Cache controls require a native Claude adaptor; keep this separate from
+  // the broader simulation capability gate.
+  const CLAUDE_CACHE_CHANNEL_TYPES = [14, 33, 41]
+  if (CLAUDE_CACHE_CHANNEL_TYPES.includes(formData.type)) {
     settingsObj.force_cache_enabled = formData.force_cache_enabled === true
     settingsObj.force_cache_ttl =
       formData.force_cache_ttl === '1h' ? '1h' : '5m'
@@ -1215,6 +1319,16 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       ? Math.min(100, Math.max(0, percent))
       : 0
     settingsObj.cache_read_min_ratio = clamped / 100
+  } else {
+    delete settingsObj.force_cache_enabled
+    delete settingsObj.force_cache_ttl
+    delete settingsObj.force_cache_1h_enabled
+    delete settingsObj.cache_1h_bill_as_5m_enabled
+    delete settingsObj.cache_read_min_ratio_enabled
+    delete settingsObj.cache_read_min_ratio
+  }
+
+  if (supportsClaudeSimulation(formData.type)) {
     settingsObj.claude_code_simulation_enabled =
       formData.claude_code_simulation_enabled === true
     const claudeCodeSimulationHeaders = parseJsonOrFallback(
@@ -1233,13 +1347,15 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       metadata: claudeCodeSimulationMetadata,
       system: claudeCodeSimulationSystem,
     }
-    if (formData.type === 14) {
+    const hasCustomHeaders =
+      claudeSimulationShowsHeaders(formData.type) &&
+      JSON.stringify(claudeCodeSimulationHeaders) !==
+        JSON.stringify(CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS)
+    if (claudeSimulationShowsHeaders(formData.type)) {
       claudeCodeSimulation.headers = claudeCodeSimulationHeaders
     }
     const hasCustomClaudeCodeSimulation =
-      (formData.type === 14 &&
-        JSON.stringify(claudeCodeSimulationHeaders) !==
-          JSON.stringify(CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS)) ||
+      hasCustomHeaders ||
       JSON.stringify(claudeCodeSimulationMetadata) !==
         JSON.stringify(CLAUDE_CODE_SIMULATION_DEFAULT_METADATA) ||
       JSON.stringify(claudeCodeSimulationSystem) !==
@@ -1253,14 +1369,53 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       delete settingsObj.claude_code_simulation
     }
   } else {
-    delete settingsObj.force_cache_enabled
-    delete settingsObj.force_cache_ttl
-    delete settingsObj.force_cache_1h_enabled
-    delete settingsObj.cache_1h_bill_as_5m_enabled
-    delete settingsObj.cache_read_min_ratio_enabled
-    delete settingsObj.cache_read_min_ratio
     delete settingsObj.claude_code_simulation_enabled
     delete settingsObj.claude_code_simulation
+  }
+
+  if (supportsCodexSimulation(formData.type)) {
+    settingsObj.codex_simulation_enabled =
+      formData.codex_simulation_enabled === true
+    const codexSimulationHeaders = parseJsonOrFallback(
+      formData.codex_simulation_headers,
+      CODEX_SIMULATION_DEFAULT_HEADERS
+    )
+    const codexSimulationMetadata = parseJsonOrFallback(
+      formData.codex_simulation_metadata,
+      CODEX_SIMULATION_DEFAULT_METADATA
+    )
+    const codexSimulationSystem = parseJsonOrFallback(
+      formData.codex_simulation_system,
+      CODEX_SIMULATION_DEFAULT_SYSTEM
+    )
+    const codexSimulation: Record<string, unknown> = {
+      metadata: codexSimulationMetadata,
+      system: codexSimulationSystem,
+    }
+    const hasCustomHeaders =
+      codexSimulationShowsHeaders(formData.type) &&
+      JSON.stringify(codexSimulationHeaders) !==
+        JSON.stringify(CODEX_SIMULATION_DEFAULT_HEADERS)
+    if (codexSimulationShowsHeaders(formData.type)) {
+      codexSimulation.headers = codexSimulationHeaders
+    }
+    const hasCustomCodexSimulation =
+      hasCustomHeaders ||
+      JSON.stringify(codexSimulationMetadata) !==
+        JSON.stringify(CODEX_SIMULATION_DEFAULT_METADATA) ||
+      JSON.stringify(codexSimulationSystem) !==
+        JSON.stringify(CODEX_SIMULATION_DEFAULT_SYSTEM)
+    if (
+      formData.codex_simulation_enabled === true ||
+      hasCustomCodexSimulation
+    ) {
+      settingsObj.codex_simulation = codexSimulation
+    } else {
+      delete settingsObj.codex_simulation
+    }
+  } else {
+    delete settingsObj.codex_simulation_enabled
+    delete settingsObj.codex_simulation
   }
 
   // Only the Ollama adaptor can switch chat completions to the OpenAI-compatible endpoint.

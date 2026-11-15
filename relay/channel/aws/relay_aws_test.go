@@ -232,10 +232,26 @@ func TestBuildAwsRequestBodyPassThroughDropsRepeatedModelAndStream(t *testing.T)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
 	info.ChannelSetting.PassThroughBodyEnabled = true
 
-	body, err := buildAwsRequestBody(c, info, nil)
+	body, err := buildAwsRequestBody(c, info, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, `{"max_tokens":8}`, string(body))
+}
+
+// Pass-through must serialize the already-rewritten payload; re-reading the
+// original client storage would silently discard the Claude Code simulation.
+func TestBuildAwsRequestBodyPassThroughUsesSimulatedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"a","stream":true,"max_tokens":8}`))
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+	info.ChannelSetting.PassThroughBodyEnabled = true
+	simulated := []byte(`{"model":"a","stream":true,"max_tokens":8,"metadata":{"user_id":"simulated"}}`)
+
+	body, err := buildAwsRequestBody(c, info, nil, simulated)
+
+	require.NoError(t, err)
+	assert.Equal(t, `{"max_tokens":8,"metadata":{"user_id":"simulated"}}`, string(body))
 }
 
 func TestDoAwsClientRequest_PreservesSafeguards(t *testing.T) {

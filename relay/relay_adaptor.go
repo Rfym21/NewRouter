@@ -33,6 +33,7 @@ import (
 	"new-router/relay/channel/openai"
 	"new-router/relay/channel/palm"
 	"new-router/relay/channel/perplexity"
+	"new-router/relay/channel/providerplugin"
 	"new-router/relay/channel/replicate"
 	"new-router/relay/channel/siliconflow"
 	"new-router/relay/channel/sub2api"
@@ -123,6 +124,8 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &sub2api.Adaptor{}
 	case constant.APITypeNewAPI:
 		return &newapi.Adaptor{}
+	case constant.APITypeProviderPlugin:
+		return &providerplugin.Adaptor{}
 	}
 	return nil
 }

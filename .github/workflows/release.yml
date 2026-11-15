@@ -162,7 +162,7 @@ jobs:
           fi
 
           mkdir -p "build/$package" dist
-          pgo="$(go list -m -f '{{.Dir}}' github.com/Calcium-Ion/moejs)/default.pgo"
+          pgo="$(go list -m -f '{{.Dir}}' github.com/MoeForge/moejs)/default.pgo"
           test -s "$pgo"
           go build -trimpath -pgo="$pgo" \
             -ldflags="-s -w -X new-router/common.Version=$BUILD_VERSION" \

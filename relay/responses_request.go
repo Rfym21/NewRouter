@@ -12,6 +12,7 @@ import (
 	relaycommon "new-router/relay/common"
 	relayconstant "new-router/relay/constant"
 	"new-router/relay/helper"
+	"new-router/relay/requestplugin"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/setting/model_setting"
@@ -54,6 +55,9 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 		if err != nil {
 			return nil, nil, nil, types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
 		}
+		if apiErr := requestplugin.PassThrough(c, info, storage); apiErr != nil {
+			return nil, nil, nil, apiErr
+		}
 		if anonymizerSession(c, info) != nil {
 			jsonData, err := storage.Bytes()
 			if err != nil {
@@ -86,11 +90,25 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 	if err != nil {
 		return nil, nil, nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
+	jsonData, apiErr := requestplugin.Outbound(c, info, jsonData)
+	if apiErr != nil {
+		return nil, nil, nil, apiErr
+	}
 	if len(info.ParamOverride) > 0 {
 		jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
 		if err != nil {
 			return nil, nil, nil, newAPIErrorFromParamOverride(err)
 		}
+	}
+	if finalizer, ok := adaptor.(relaychannel.ResponsesRequestFinalizer); ok {
+		jsonData, err = finalizer.FinalizeResponsesRequest(info, jsonData)
+		if err != nil {
+			return nil, nil, nil, newConvertRequestFailedError(c, info, err)
+		}
+	}
+	// egress reads the body as it is sent, after the channel finalized it.
+	if apiErr = requestplugin.Egress(c, info, jsonData); apiErr != nil {
+		return nil, nil, nil, apiErr
 	}
 
 	jsonData, err = anonymizeRelayRequestJSON(c, info, types.RelayFormatOpenAIResponses, jsonData)

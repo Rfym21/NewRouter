@@ -10,6 +10,7 @@ import (
 	"new-router/logger"
 	relaycommon "new-router/relay/common"
 	"new-router/relay/helper"
+	"new-router/relay/requestplugin"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/service"
@@ -27,11 +28,14 @@ func AlphaSearchHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError
 		constant.ChannelTypeCodex,
 		constant.ChannelTypeAdvancedCustom:
 	default:
-		// Allow retry onto another channel that may support this endpoint.
-		return types.NewError(
-			errors.New("channel does not support /v1/alpha/search"),
-			types.ErrorCodeInvalidRequest,
-		)
+		// Provider plugin channels serve the paths of their relay routes.
+		if info.ApiType != constant.APITypeProviderPlugin {
+			// Allow retry onto another channel that may support this endpoint.
+			return types.NewError(
+				errors.New("channel does not support /v1/alpha/search"),
+				types.ErrorCodeInvalidRequest,
+			)
+		}
 	}
 
 	request, ok := info.Request.(*dto.AlphaSearchRequest)
@@ -54,11 +58,17 @@ func AlphaSearchHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError
 		return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 
+	if jsonData, newAPIError = requestplugin.Outbound(c, info, jsonData); newAPIError != nil {
+		return newAPIError
+	}
 	if len(info.ParamOverride) > 0 {
 		jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
 		if err != nil {
 			return newAPIErrorFromParamOverride(err)
 		}
+	}
+	if newAPIError = requestplugin.Egress(c, info, jsonData); newAPIError != nil {
+		return newAPIError
 	}
 
 	logger.LogDebug(c, "requestBody: %s", jsonData)

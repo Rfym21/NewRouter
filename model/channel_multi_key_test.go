@@ -229,15 +229,17 @@ func TestNormalizeMultiKeyStatus(t *testing.T) {
 		key           string
 		statusList    map[int]int
 		status        int
+		seededReason  string // 空串 = 默认 "seeded reason"
 		wantStatus    int
 		wantReason    string // 空串 = 期望 status_reason 不存在
 		wantFreshTime bool   // status_time 是否应被刷新
 	}{
 		{
-			name:          "a 有可用密钥的自动禁用渠道恢复启用",
+			name:          "a 有可用密钥且因密钥全禁用而自动禁用的渠道恢复启用",
 			key:           "k0\nk1",
 			statusList:    map[int]int{},
 			status:        common.ChannelStatusAutoDisabled,
+			seededReason:  ChannelStatusReasonAllKeysDisabled,
 			wantStatus:    common.ChannelStatusEnabled,
 			wantReason:    "",
 			wantFreshTime: true,
@@ -274,9 +276,20 @@ func TestNormalizeMultiKeyStatus(t *testing.T) {
 			key:           "k0\nk1",
 			statusList:    nil,
 			status:        common.ChannelStatusAutoDisabled,
+			seededReason:  ChannelStatusReasonAllKeysDisabled,
 			wantStatus:    common.ChannelStatusEnabled,
 			wantReason:    "",
 			wantFreshTime: true,
+		},
+		{
+			name:          "f 其他原因的自动禁用不因密钥可用而恢复",
+			key:           "k0\nk1",
+			statusList:    map[int]int{},
+			status:        common.ChannelStatusAutoDisabled,
+			seededReason:  "provider rejected key",
+			wantStatus:    common.ChannelStatusAutoDisabled,
+			wantReason:    "provider rejected key",
+			wantFreshTime: false,
 		},
 	}
 
@@ -294,8 +307,12 @@ func TestNormalizeMultiKeyStatus(t *testing.T) {
 					MultiKeyStatusList: c.statusList,
 				},
 			}
+			seededReason := c.seededReason
+			if seededReason == "" {
+				seededReason = "seeded reason"
+			}
 			channel.SetOtherInfo(map[string]interface{}{
-				"status_reason": "seeded reason",
+				"status_reason": seededReason,
 				"status_time":   seededTime,
 			})
 

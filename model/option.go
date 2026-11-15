@@ -273,23 +273,30 @@ func InitOptionMap() {
 	maps.Copy(common.OptionMap, modelConfigs)
 
 	common.OptionMapRWMutex.Unlock()
-	loadOptionsFromDatabase()
+	if err := LoadOptionsFromDatabase(); err != nil {
+		common.SysError(common.LogText("failed to load options from database: %s", err.Error()))
+	}
 }
 
-func loadOptionsFromDatabase() {
+// LoadOptionsFromDatabase applies every stored option. A failed read keeps
+// the options in memory as they are.
+func LoadOptionsFromDatabase() error {
 	anonymizationAnalyzerOptionMutex.Lock()
 	defer anonymizationAnalyzerOptionMutex.Unlock()
 	rangeOptions, rangeErr := migrateLogRangeOptions(nil)
 	requestPolicyOptionMutex.Lock()
 	defer requestPolicyOptionMutex.Unlock()
+	passkeyOptionMutex.Lock()
+	defer passkeyOptionMutex.Unlock()
+	options, err := AllOption()
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if err := refreshRequestPolicySnapshot(); err != nil {
 			common.SysError(common.LogText("invalid request policy: %s", err.Error()))
 		}
 	}()
-	passkeyOptionMutex.Lock()
-	defer passkeyOptionMutex.Unlock()
-	options, _ := AllOption()
 	if rangeErr != nil {
 		common.SysError("failed to merge log time range options: " + rangeErr.Error())
 		if len(rangeOptions) == 0 {
@@ -340,13 +347,24 @@ func loadOptionsFromDatabase() {
 	if err := applyAnonymizationAnalyzerOptions(analyzerOptions); err != nil {
 		common.SysError("failed to reload anonymization analyzer settings")
 	}
+	return nil
+}
+
+// loadOptionsFromDatabase keeps the pre-rename entry point for callers that do
+// not inspect the refresh error. Runtime paths use LoadOptionsFromDatabase.
+func loadOptionsFromDatabase() {
+	if err := LoadOptionsFromDatabase(); err != nil {
+		common.SysError(common.LogText("failed to load options from database: %s", err.Error()))
+	}
 }
 
 func SyncOptions(frequency int) {
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
 		common.SysLog(common.LogText("syncing options from database"))
-		loadOptionsFromDatabase()
+		if err := LoadOptionsFromDatabase(); err != nil {
+			common.SysError(common.LogText("failed to load options from database: %s", err.Error()))
+		}
 	}
 }
 
@@ -358,6 +376,9 @@ func validateOptionValue(key string, value string) error {
 		return errLegacyRetireAtReadOnly
 	}
 	if err := operation_setting.ValidateQuotaOption(key, value); err != nil {
+		return err
+	}
+	if err := operation_setting.ValidateEpaySignOption(key, value); err != nil {
 		return err
 	}
 	if key == "EmailProvider" || key == "ResendApiKey" || key == "ResendFrom" {
@@ -389,6 +410,9 @@ func validateOptionValue(key string, value string) error {
 	}
 	if isLogRangeOption(key) {
 		return operation_setting.ValidateLogMaxRangeDays(value)
+	}
+	if key == operation_setting.SystemTaskRetentionDaysOptionKey {
+		return operation_setting.ValidateSystemTaskRetentionDays(value)
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
@@ -424,6 +448,7 @@ func UpdateOption(key string, value string) error {
 	if err := DB.Save(&option).Error; err != nil {
 		return fmt.Errorf("save option %q: %w", key, err)
 	}
+	BumpSyncTopic(SyncTopicOptions)
 	return updateOptionMap(key, value)
 }
 
@@ -509,6 +534,7 @@ func UpdateOptionsBulk(values map[string]string) error {
 	if err != nil {
 		return err
 	}
+	BumpSyncTopic(SyncTopicOptions)
 	for k, v := range values {
 		if isAnonymizationAnalyzerOption(k) {
 			continue

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"new-router/relaykit/dto"
 	"new-router/service"
 	"new-router/service/authz"
+	"new-router/setting/request_plugin_setting"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -71,6 +73,7 @@ func parseStatusFilter(statusParam string) int {
 }
 
 func clearChannelInfo(channel *model.Channel) {
+	channel.BalanceDetail = channel.GetBalanceDetail()
 	if channel.ChannelInfo.IsMultiKey {
 		channel.ChannelInfo.MultiKeyDisabledReason = nil
 		channel.ChannelInfo.MultiKeyDisabledTime = nil
@@ -119,7 +122,10 @@ func disableMultiKeyChannelIfUnavailable(channel *model.Channel) bool {
 }
 
 func restoreMultiKeyChannelIfAvailable(channel *model.Channel) {
-	if channel.Status != common.ChannelStatusManuallyDisabled || !hasEnabledMultiKey(channel) {
+	// Manual key disables and request-driven key failures both record the
+	// all-keys reason; any later manual channel disable replaces it.
+	disabled := channel.Status == common.ChannelStatusManuallyDisabled || channel.Status == common.ChannelStatusAutoDisabled
+	if !disabled || !hasEnabledMultiKey(channel) {
 		return
 	}
 	info := channel.GetOtherInfo()
@@ -130,6 +136,30 @@ func restoreMultiKeyChannelIfAvailable(channel *model.Channel) {
 	info["status_reason"] = ""
 	info["status_time"] = common.GetTimestamp()
 	channel.SetOtherInfo(info)
+}
+
+// saveManagedKeyStatus runs change on the stored multi-key channel and writes
+// the key statuses, channel status and status reason it leaves. A change
+// another writer, on any node, makes to other_info meanwhile, such as a
+// balance query, is kept.
+func saveManagedKeyStatus(channelID int, change func(stored *model.Channel) error) error {
+	statusChanged, enabled := false, false
+	written, err := model.UpdateChannelOtherInfo(channelID, func(stored *model.Channel) (map[string]any, error) {
+		status := stored.Status
+		if err := change(stored); err != nil {
+			return nil, err
+		}
+		statusChanged, enabled = stored.Status != status, stored.Status == common.ChannelStatusEnabled
+		return map[string]any{"status": stored.Status, "channel_info": stored.ChannelInfo}, nil
+	})
+	if err != nil || !written {
+		return err
+	}
+	model.BumpSyncTopic(model.SyncTopicChannels)
+	if statusChanged {
+		return model.UpdateAbilityStatus(channelID, enabled)
+	}
+	return nil
 }
 
 func applyChannelStatusFilter(query *gorm.DB, statusFilter int) *gorm.DB {
@@ -542,8 +572,9 @@ func GetChannelKey(c *gin.Context) {
 	})
 
 	// 返回渠道密钥
+	// A plugin credential shows as its summary, never its secrets.
 	common.ApiSuccessT(c, "Fetched successfully", map[string]any{
-		"key": channel.Key,
+		"key": jsplugin.RedactCredentialLines(channel.Key),
 	})
 }
 
@@ -692,6 +723,25 @@ func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 // extended with; it comfortably covers every built-in and installed plugin.
 const maxTaskExtendPluginKeys = 32
 
+// normalizePluginConfig validates the plugin config in the channel's settings
+// and stores it as the schema reads it: declared properties only, defaults
+// left to the read.
+func normalizePluginConfig(channel *model.Channel, plugin *jsplugin.LoadedPlugin) error {
+	otherSettings := channel.GetOtherSettings()
+	config, err := plugin.ValidateChannelConfig(otherSettings.PluginConfig)
+	if err != nil {
+		return common.NewMessage("Invalid plugin config: {{error}}", map[string]any{"error": err.Error()})
+	}
+	if plugin.Meta.ChannelConfig == nil || string(config) == "{}" {
+		config = nil
+	}
+	if !bytes.Equal(config, otherSettings.PluginConfig) {
+		otherSettings.PluginConfig = config
+		channel.SetOtherSettings(otherSettings)
+	}
+	return nil
+}
+
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
@@ -714,6 +764,9 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		if !ok {
 			return fmt.Errorf("task plugin %q is not registered", pluginKey)
 		}
+		if !plugin.Meta.HasTaskPart() && !plugin.Meta.HasProviderPart() {
+			return common.NewMessage("Plugin {{plugin}} only processes requests and cannot be a channel type", map[string]any{"plugin": pluginKey})
+		}
 		if channel.BaseURL == nil || strings.TrimSpace(*channel.BaseURL) == "" {
 			// The plugin default is persisted onto the channel instead of being
 			// resolved per request, so the destination host stays an auditable
@@ -724,9 +777,28 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 			defaultBaseURL := plugin.Meta.BaseURL
 			channel.BaseURL = &defaultBaseURL
 		}
+		if err := normalizePluginConfig(channel, plugin); err != nil {
+			return err
+		}
 	}
 
 	setting := channel.GetSetting()
+	if len(setting.RequestPlugins) > 0 {
+		saved := map[string]bool{}
+		for _, instance := range request_plugin_setting.GetInstances() {
+			saved[instance.ID] = true
+		}
+		bound := make(map[string]bool, len(setting.RequestPlugins))
+		for _, id := range setting.RequestPlugins {
+			if !saved[id] {
+				return common.NewMessage("Request plugin instance {{id}} does not exist", map[string]any{"id": id})
+			}
+			if bound[id] {
+				return common.NewMessage("Request plugin instance {{id}} is bound more than once", map[string]any{"id": id})
+			}
+			bound[id] = true
+		}
+	}
 	if channel.Type != constant.ChannelTypeNewAPI && len(setting.TaskExtendPluginKeys) > 0 {
 		return fmt.Errorf("task_extend_plugin_keys is only supported on New API channels")
 	}
@@ -774,8 +846,12 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	// 如果是添加操作，检查 channel 和 key 是否为空
 	if isAdd {
-		if channel.Key == "" {
+		// A channel of a plugin that logs in may start without a key.
+		if channel.Key == "" && !service.ChannelSupportsPluginLogin(channel) {
 			return fmt.Errorf("channel cannot be empty")
+		}
+		if err := service.CheckSubmittedPluginCredentials(channel.Type, channel.GetSetting().TaskPluginKey, channel.Key, ""); err != nil {
+			return err
 		}
 
 		// 检查模型名称长度是否超过 255
@@ -931,6 +1007,18 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if err := checkPluginChannelKeys(c, addChannelRequest.Channel, addChannelRequest.Channel.Key, ""); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	// A channel of a plugin that logs in may start without a key and wait for
+	// a login; batch mode makes one channel per key, so it still needs keys.
+	keyless := strings.TrimSpace(addChannelRequest.Channel.Key) == "" && service.ChannelSupportsPluginLogin(addChannelRequest.Channel)
+	if keyless && addChannelRequest.Mode == "batch" {
+		common.ApiError(c, fmt.Errorf("channel cannot be empty"))
+		return
+	}
 
 	if !assertTagManageable(c, addChannelRequest.Channel.GetTag()) {
 		return
@@ -1010,6 +1098,12 @@ func AddChannel(c *gin.Context) {
 			channelInputIndices = append(channelInputIndices, []int{inputIndices[i]})
 		}
 	}
+	if keyless && len(channels) == 0 {
+		addChannelRequest.Channel.Key = ""
+		service.PluginLoginNeededStatus(addChannelRequest.Channel)
+		channels = append(channels, *addChannelRequest.Channel)
+		channelInputIndices = append(channelInputIndices, nil)
+	}
 	err = model.BatchInsertChannels(channels)
 	if err != nil {
 		common.ApiError(c, err)
@@ -1052,17 +1146,21 @@ func DeleteChannel(c *gin.Context) {
 	channelName := ""
 	channelProxy := ""
 	channelLookupFailed := false
-	if existing, err := model.GetChannelById(id, false); err == nil && existing != nil {
+	existing, err := model.GetChannelById(id, true)
+	if err == nil && existing != nil {
 		channelName = existing.Name
 		channelProxy = existing.GetSetting().Proxy
 	} else {
 		channelLookupFailed = true
 	}
 	channel := model.Channel{Id: id}
-	err := channel.Delete()
+	err = channel.Delete()
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if !channelLookupFailed {
+		service.RevokeDeletedChannelCredentials([]*model.Channel{existing})
 	}
 	model.InitChannelCache()
 	if channelLookupFailed {
@@ -1093,11 +1191,18 @@ func DeleteDisabledChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	var revoked []*model.Channel
+	if err := model.DB.Where("(status = ? or status = ?) AND type = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled, constant.ChannelTypeTaskPlugin).
+		Find(&revoked).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	rows, err := model.DeleteDisabledChannel()
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	service.RevokeDeletedChannelCredentials(revoked)
 	model.InitChannelCache()
 	if rows > 0 {
 		service.ResetProxyClientCache()
@@ -1251,11 +1356,17 @@ func DeleteChannelBatch(c *gin.Context) {
 	if !assertChannelIDsManageable(c, channelBatch.Ids) {
 		return
 	}
+	var revoked []*model.Channel
+	if err := model.DB.Where("id in (?) AND type = ?", channelBatch.Ids, constant.ChannelTypeTaskPlugin).Find(&revoked).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	deletedCount, err := model.BatchDeleteChannels(channelBatch.Ids)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	service.RevokeDeletedChannelCredentials(revoked)
 	model.InitChannelCache()
 	if deletedCount > 0 {
 		service.ResetProxyClientCache()
@@ -1375,82 +1486,151 @@ func UpdateChannel(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyMode = constant.MultiKeyMode(*channel.MultiKeyMode)
 	}
 
+	// nextKey is the key the edit sets on a stored key: a submitted key replaces
+	// it, and an empty one keeps it.
+	nextKey := func(stored string) (string, error) { return channel.Key, nil }
 	// 处理多key模式下的密钥追加/覆盖逻辑
-	if channel.KeyMode != nil && channel.ChannelInfo.IsMultiKey {
-		switch *channel.KeyMode {
-		case "append":
-			// 追加模式：将新密钥添加到现有密钥列表
-			if originChannel.Key != "" {
-				var newKeys []string
-				var existingKeys []string
-
-				// 解析现有密钥
-				if strings.HasPrefix(strings.TrimSpace(originChannel.Key), "[") {
-					// JSON数组格式
-					var arr []json.RawMessage
-					if err := json.Unmarshal([]byte(strings.TrimSpace(originChannel.Key)), &arr); err == nil {
-						existingKeys = make([]string, len(arr))
-						for i, v := range arr {
-							existingKeys[i] = string(v)
-						}
-					}
-				} else {
-					// 换行分隔格式
-					existingKeys = strings.Split(strings.Trim(originChannel.Key, "\n"), "\n")
-				}
-
-				// 处理 Vertex AI 的特殊情况
-				if channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
-					// 尝试解析新密钥为JSON数组
-					if strings.HasPrefix(strings.TrimSpace(channel.Key), "[") {
-						array, _, err := getVertexArrayKeys(channel.Key)
-						if err != nil {
-							common.ApiErrorT(c, "Failed to parse appended keys: {{error}}", map[string]any{"error": err.Error()})
-							return
-						}
-						newKeys = array
-					} else {
-						// 单个JSON密钥
-						newKeys = []string{channel.Key}
-					}
-				} else {
-					// 普通渠道的处理
-					inputKeys := strings.SplitSeq(channel.Key, "\n")
-					for key := range inputKeys {
-						key = strings.TrimSpace(key)
-						if key != "" {
-							newKeys = append(newKeys, key)
-						}
-					}
-				}
-
-				seen := make(map[string]struct{}, len(existingKeys)+len(newKeys))
-				for _, key := range existingKeys {
-					normalized := strings.TrimSpace(key)
-					if normalized == "" {
-						continue
-					}
-					seen[normalized] = struct{}{}
-				}
-				dedupedNewKeys := make([]string, 0, len(newKeys))
-				for _, key := range newKeys {
-					normalized := strings.TrimSpace(key)
-					if normalized == "" {
-						continue
-					}
-					if _, ok := seen[normalized]; ok {
-						continue
-					}
-					seen[normalized] = struct{}{}
-					dedupedNewKeys = append(dedupedNewKeys, normalized)
-				}
-
-				allKeys := append(existingKeys, dedupedNewKeys...)
-				channel.Key = strings.Join(allKeys, "\n")
+	if channel.KeyMode != nil && *channel.KeyMode == "append" && channel.ChannelInfo.IsMultiKey {
+		// 追加模式：将新密钥添加到现有密钥列表
+		nextKey = func(stored string) (string, error) {
+			if stored == "" {
+				return channel.Key, nil
 			}
-		case "replace":
-			// 覆盖模式：直接使用新密钥（默认行为，不需要特殊处理）
+			var newKeys []string
+			var existingKeys []string
+
+			// 解析现有密钥
+			if strings.HasPrefix(strings.TrimSpace(stored), "[") {
+				// JSON数组格式
+				var arr []json.RawMessage
+				if err := json.Unmarshal([]byte(strings.TrimSpace(stored)), &arr); err == nil {
+					existingKeys = make([]string, len(arr))
+					for i, v := range arr {
+						existingKeys[i] = string(v)
+					}
+				}
+			} else {
+				// 换行分隔格式
+				existingKeys = strings.Split(strings.Trim(stored, "\n"), "\n")
+			}
+
+			// 处理 Vertex AI 的特殊情况
+			if channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
+				// 尝试解析新密钥为JSON数组
+				if strings.HasPrefix(strings.TrimSpace(channel.Key), "[") {
+					array, _, err := getVertexArrayKeys(channel.Key)
+					if err != nil {
+						return "", common.NewMessage("Failed to parse appended keys: {{error}}", map[string]any{"error": err.Error()})
+					}
+					newKeys = array
+				} else {
+					// 单个JSON密钥
+					newKeys = []string{channel.Key}
+				}
+			} else {
+				// 普通渠道的处理
+				inputKeys := strings.SplitSeq(channel.Key, "\n")
+				for key := range inputKeys {
+					key = strings.TrimSpace(key)
+					if key != "" {
+						newKeys = append(newKeys, key)
+					}
+				}
+			}
+
+			seen := make(map[string]struct{}, len(existingKeys)+len(newKeys))
+			for _, key := range existingKeys {
+				normalized := strings.TrimSpace(key)
+				if normalized == "" {
+					continue
+				}
+				seen[normalized] = struct{}{}
+			}
+			dedupedNewKeys := make([]string, 0, len(newKeys))
+			for _, key := range newKeys {
+				normalized := strings.TrimSpace(key)
+				if normalized == "" {
+					continue
+				}
+				if _, ok := seen[normalized]; ok {
+					continue
+				}
+				seen[normalized] = struct{}{}
+				dedupedNewKeys = append(dedupedNewKeys, normalized)
+			}
+
+			allKeys := append(existingKeys, dedupedNewKeys...)
+			return strings.Join(allKeys, "\n"), nil
 		}
+	}
+	requestedKey, err := nextKey(originChannel.Key)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// An edit that leaves the key as it read it writes no key, so it cannot put
+	// back a credential a refresh replaced meanwhile.
+	keyChanged := requestedKey != "" && requestedKey != originChannel.Key
+	// A type or setting left out keeps the stored one.
+	keptKey, keptType, keptPluginKey := originChannel.Key, channel.Type, channel.GetSetting().TaskPluginKey
+	if keyChanged {
+		keptKey = requestedKey
+	}
+	if keptType == 0 {
+		keptType = originChannel.Type
+	}
+	if !settingProvided {
+		keptPluginKey = originChannel.GetSetting().TaskPluginKey
+	}
+	if err := service.CheckSubmittedPluginCredentials(keptType, keptPluginKey, keptKey, originChannel.Key); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// validateChannel checks the plugin config of a request that names type
+	// 61; settings sent without the type are checked against the kept plugin.
+	if channel.Type == 0 && keptType == constant.ChannelTypeTaskPlugin && channel.OtherSettings != "" {
+		if plugin, ok := jsplugin.DefaultRegistry.Get(strings.TrimSpace(keptPluginKey)); ok {
+			if err := normalizePluginConfig(&channel.Channel, plugin); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+	}
+	if keyChanged && keptType == constant.ChannelTypeTaskPlugin {
+		checked := channel.Channel
+		checked.Type = keptType
+		checked.SetSetting(dto.ChannelSettings{TaskPluginKey: keptPluginKey})
+		if checked.OtherSettings == "" {
+			checked.OtherSettings = originChannel.OtherSettings
+		}
+		if checked.BaseURL == nil {
+			checked.BaseURL = originChannel.BaseURL
+		}
+		if err := checkPluginChannelKeys(c, &checked, keptKey, originChannel.Key); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
+	// A new key is made from the key stored when the channel's key lock is
+	// held, the lock a credential refresh also takes to write its result.
+	var keyBefore, keyAfter string
+	if keyChanged {
+		stored, err := model.UpdateChannelLocked(channel.Id, func(stored *model.Channel) error {
+			next, err := nextKey(stored.Key)
+			if err != nil {
+				return err
+			}
+			if err := service.CheckSubmittedPluginCredentials(keptType, keptPluginKey, next, stored.Key); err != nil {
+				return err
+			}
+			keyBefore, stored.Key = stored.Key, next
+			return nil
+		})
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		keyAfter = stored.Key
 	}
 	err = channel.Update()
 	if err != nil {
@@ -1460,6 +1640,9 @@ func UpdateChannel(c *gin.Context) {
 	model.InitChannelCache()
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
+	}
+	if keyChanged {
+		service.RevokeRemovedChannelCredentials(originChannel, keyBefore, keyAfter)
 	}
 	// 记录变更的字段名（语言无关的字段标识），密钥仅记录"已更换"绝不记录内容。
 	changedFields := make([]string, 0)
@@ -1475,7 +1658,7 @@ func UpdateChannel(c *gin.Context) {
 	if !equalStringPtr(channel.BaseURL, originChannel.BaseURL) {
 		changedFields = append(changedFields, "base_url")
 	}
-	if channel.Key != "" && channel.Key != originChannel.Key {
+	if keyChanged {
 		changedFields = append(changedFields, "key")
 	}
 	updateAudit := map[string]any{
@@ -1587,6 +1770,7 @@ type fetchModelsRequest struct {
 	BaseURL        *string `json:"base_url"`
 	Type           int     `json:"type"`
 	Key            string  `json:"key"`
+	TaskPluginKey  string  `json:"task_plugin_key"`
 	AdvancedCustom *string `json:"advanced_custom"`
 	HeaderOverride *string `json:"header_override"`
 	Proxy          *string `json:"proxy"`
@@ -1660,6 +1844,51 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 	return channel, nil
 }
 
+// checkPluginChannelKeys runs the checkKey of a task plugin channel's plugin
+// on the key lines an administrator typed in: those of key that storedKey
+// does not hold.
+func checkPluginChannelKeys(c *gin.Context, channel *model.Channel, key, storedKey string) error {
+	if channel == nil || channel.Type != constant.ChannelTypeTaskPlugin {
+		return nil
+	}
+	plugin, ok := jsplugin.DefaultRegistry.Get(channel.GetSetting().TaskPluginKey)
+	if !ok {
+		return nil
+	}
+	config := plugin.ChannelConfigFor(channel.GetOtherSettings().PluginConfig)
+	return service.CheckPluginKeys(c.Request.Context(), plugin, channel.GetBaseURL(), config, key, storedKey, i18n.StatedLang(c))
+}
+
+// applyTaskPluginModelPreview sets up an unsaved task plugin channel for a
+// model list preview as the Advanced Custom preview does: the plugin's
+// meta.baseUrl stands in for an empty base URL, and the form's header
+// override and proxy apply.
+func applyTaskPluginModelPreview(channel *model.Channel, req fetchModelsRequest) error {
+	pluginKey := strings.TrimSpace(req.TaskPluginKey)
+	settings := dto.ChannelSettings{TaskPluginKey: pluginKey}
+	if req.Proxy != nil {
+		settings.Proxy = strings.TrimSpace(*req.Proxy)
+	}
+	channel.SetSetting(settings)
+	if channel.GetBaseURL() == "" {
+		if plugin, ok := jsplugin.DefaultRegistry.Get(pluginKey); ok && plugin.Meta.BaseURL != "" {
+			baseURL := plugin.Meta.BaseURL
+			channel.BaseURL = &baseURL
+		}
+	}
+	if req.HeaderOverride != nil {
+		rawHeaderOverride := strings.TrimSpace(*req.HeaderOverride)
+		if rawHeaderOverride != "" {
+			var headerOverride map[string]any
+			if err := common.UnmarshalJsonStr(rawHeaderOverride, &headerOverride); err != nil {
+				return fmt.Errorf("header_override must be a JSON object: %w", err)
+			}
+		}
+		channel.HeaderOverride = &rawHeaderOverride
+	}
+	return nil
+}
+
 func FetchModels(c *gin.Context) {
 	var req fetchModelsRequest
 
@@ -1696,6 +1925,12 @@ func FetchModels(c *gin.Context) {
 			Type:    req.Type,
 			Key:     key,
 			BaseURL: &baseURL,
+		}
+		if req.Type == constant.ChannelTypeTaskPlugin {
+			if err := applyTaskPluginModelPreview(channel, req); err != nil {
+				common.ApiError(c, err)
+				return
+			}
 		}
 	}
 
@@ -1836,6 +2071,7 @@ func CopyChannel(c *gin.Context) {
 		clone.Balance = 0
 		clone.UsedQuota = 0
 	}
+	service.DropPluginCredentials(&clone)
 
 	if err := clone.ValidateSettings(); err != nil {
 		common.SysError(common.LogText("failed to validate cloned channel: %s", err.Error()))
@@ -1986,9 +2222,11 @@ func handleGetKeyStatus(c *gin.Context, request MultiKeyManageRequest) {
 			}
 		}
 
-		// Create key preview (first 10 chars)
+		// Create key preview (first 10 chars); a plugin credential shows its label.
 		keyPreview := key
-		if len(key) > 10 {
+		if preview, ok := service.PluginCredentialPreview(key); ok {
+			keyPreview = preview
+		} else if len(key) > 10 {
 			keyPreview = key[:10] + "..."
 		}
 
@@ -2482,27 +2720,33 @@ func ManageMultiKeys(c *gin.Context) {
 		}
 
 		keyIndex := *request.KeyIndex
-		if keyIndex < 0 || keyIndex >= channel.ChannelInfo.MultiKeySize {
-			common.ApiErrorT(c, "Key index out of range")
-			return
-		}
+		// Rewrite the key list from the stored row under the channel's key lock:
+		// a credential refresh may have replaced a key since channel was read,
+		// and Channel.Update never writes the key list.
+		var keyBefore string
+		shouldCloseWebSocket := false
+		stored, err := model.UpdateChannelLocked(channel.Id, func(stored *model.Channel) error {
+			keyBefore = stored.Key
+			if keyIndex < 0 || keyIndex >= len(stored.GetKeys()) {
+				return common.NewMessage("Key index out of range")
+			}
+			// The caller prevents removing every key; RemoveMultiKeys only rewrites indexed state.
+			if len(stored.GetKeys()) <= 1 {
+				return common.NewMessage("Cannot delete the last key")
+			}
 
-		// The caller prevents removing every key; RemoveMultiKeys only rewrites indexed state.
-		if len(channel.GetKeys()) <= 1 {
-			common.ApiErrorT(c, "Cannot delete the last key")
-			return
-		}
+			stored.RemoveMultiKeys(map[int]struct{}{keyIndex: {}})
 
-		channel.RemoveMultiKeys(map[int]struct{}{keyIndex: {}})
-
-		channel.NormalizeMultiKeyStatus()
-		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
-		err = channel.Update()
+			stored.NormalizeMultiKeyStatus()
+			shouldCloseWebSocket = disableMultiKeyChannelIfUnavailable(stored)
+			return nil
+		})
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
 		model.InitChannelCache()
+		service.RevokeRemovedChannelCredentials(stored, keyBefore, stored.Key)
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
@@ -2535,17 +2779,27 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		removed := channel.RemoveMultiKeys(targets)
-
-		channel.NormalizeMultiKeyStatus()
-		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
-		err = channel.Update()
+		var keyBefore string
+		removed := 0
+		shouldCloseWebSocket := false
+		stored, err := model.UpdateChannelLocked(channel.Id, func(stored *model.Channel) error {
+			keyBefore = stored.Key
+			// 同样把"不能删空"留在 caller；返回 200 + success:false 而不是 common.ApiError（那会变 500）
+			if len(targets) >= len(stored.GetKeys()) {
+				return common.NewMessage("Cannot delete the last key")
+			}
+			removed = stored.RemoveMultiKeys(targets)
+			stored.NormalizeMultiKeyStatus()
+			shouldCloseWebSocket = disableMultiKeyChannelIfUnavailable(stored)
+			return nil
+		})
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
 
 		model.InitChannelCache()
+		service.RevokeRemovedChannelCredentials(stored, keyBefore, stored.Key)
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}
@@ -2556,7 +2810,7 @@ func ManageMultiKeys(c *gin.Context) {
 				// 数量取自 RemoveMultiKeys 的返回值而非 len(targets)
 				"affected_count":  removed,
 				"skipped_count":   len(targets) - removed,
-				"remaining_count": len(channel.GetKeys()),
+				"remaining_count": len(stored.GetKeys()),
 			},
 		})
 		return
@@ -2576,11 +2830,8 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		// 与 delete_key / delete_keys 一致地拒绝删空。删空这条路径本身就是坏的：
-		// RemoveMultiKeys 会把 channel.Key 置空，Update() 的 channel.Key == "" 分支转而从 DB
-		// 读回旧密钥列表，而 DB.Updates(channel) 又会跳过零值 Key —— 密钥一个都删不掉，
-		// 但三张 map 已被清空、NormalizeMultiKeyStatus 还会把渠道翻成自动禁用并关掉 abilities。
-		// 净效果是"密钥没删、渠道下线"，所以这里直接拒绝并让管理员去删渠道本身。
+		// 与 delete_key / delete_keys 一致地拒绝删空：把渠道的全部密钥删掉不是本 action 的语义，
+		// 渠道会失去任何密钥而无法轮询；需要下线请直接删除渠道本身。
 		if len(deleted) >= len(keys) {
 			respondMultiKeyBatchError(c, multiKeyBatchFailure{
 				code:    multiKeyErrCodeAllKeysDisabled,
@@ -2589,16 +2840,35 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		deletedCount := channel.RemoveMultiKeys(deleted)
-
-		channel.NormalizeMultiKeyStatus()
-		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
-		err = channel.Update()
+		var keyBefore string
+		deletedCount := 0
+		shouldCloseWebSocket := false
+		stored, err := model.UpdateChannelLocked(channel.Id, func(stored *model.Channel) error {
+			keyBefore = stored.Key
+			targets := make(map[int]struct{})
+			for i := range stored.GetKeys() {
+				// 只删除自动禁用（status == 3）的密钥，保留启用与手动禁用的密钥
+				if stored.ChannelInfo.MultiKeyStatusList[i] == common.ChannelStatusAutoDisabled {
+					targets[i] = struct{}{}
+				}
+			}
+			if len(targets) == 0 {
+				return common.NewMessage("No auto-disabled keys to delete")
+			}
+			if len(targets) >= len(stored.GetKeys()) {
+				return common.NewMessage("Cannot delete every key; delete the channel instead")
+			}
+			deletedCount = stored.RemoveMultiKeys(targets)
+			stored.NormalizeMultiKeyStatus()
+			shouldCloseWebSocket = disableMultiKeyChannelIfUnavailable(stored)
+			return nil
+		})
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
 		model.InitChannelCache()
+		service.RevokeRemovedChannelCredentials(stored, keyBefore, stored.Key)
 		if shouldCloseWebSocket {
 			closeActiveChannelWebSockets([]int{channel.Id})
 		}

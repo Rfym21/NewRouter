@@ -12,6 +12,7 @@ import (
 	openaichannel "new-router/relay/channel/openai"
 	relaycommon "new-router/relay/common"
 	relayconstant "new-router/relay/constant"
+	"new-router/relay/requestplugin"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/service"
@@ -73,7 +74,9 @@ func applySystemPromptIfNeeded(c *gin.Context, info *relaycommon.RelayInfo, requ
 }
 
 func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, request any) (*dto.Usage, *types.NewAPIError) {
-	paramOverrideApplied := false
+	// A chat request takes the outbound plugins and the param override in
+	// chat form, before the conversion.
+	outboundApplied := false
 	if chatRequest, ok := request.(*dto.GeneralOpenAIRequest); ok {
 		chatJSON, err := common.Marshal(chatRequest)
 		if err != nil {
@@ -85,17 +88,21 @@ func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adapto
 			return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 		}
 
+		chatJSON, apiErr := requestplugin.Outbound(c, info, chatJSON)
+		if apiErr != nil {
+			return nil, apiErr
+		}
 		if len(info.ParamOverride) > 0 {
 			chatJSON, err = relaycommon.ApplyParamOverrideWithRelayInfo(chatJSON, info)
 			if err != nil {
 				return nil, newAPIErrorFromParamOverride(err)
 			}
-			paramOverrideApplied = true
 		}
 		chatJSON, err = anonymizeRelayRequestJSON(c, info, types.RelayFormatOpenAI, chatJSON)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 		}
+		outboundApplied = true
 
 		var overriddenChatReq dto.GeneralOpenAIRequest
 		if err := common.Unmarshal(chatJSON, &overriddenChatReq); err != nil {
@@ -112,10 +119,10 @@ func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adapto
 	if !ok {
 		return nil, types.NewError(fmt.Errorf("expected OpenAI responses request, got %T", result.Value), types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
-	return relayResponsesRequest(c, info, adaptor, responsesReq, paramOverrideApplied)
+	return relayResponsesRequest(c, info, adaptor, responsesReq, outboundApplied)
 }
 
-func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, responsesReq *dto.OpenAIResponsesRequest, paramOverrideApplied bool) (*dto.Usage, *types.NewAPIError) {
+func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, responsesReq *dto.OpenAIResponsesRequest, outboundApplied bool) (*dto.Usage, *types.NewAPIError) {
 	savedRelayMode := info.RelayMode
 	savedRequestURLPath := info.RequestURLPath
 	defer func() {
@@ -141,11 +148,20 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
-	if !paramOverrideApplied && len(info.ParamOverride) > 0 {
-		jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
-		if err != nil {
-			return nil, newAPIErrorFromParamOverride(err)
+	if !outboundApplied {
+		var apiErr *types.NewAPIError
+		if jsonData, apiErr = requestplugin.Outbound(c, info, jsonData); apiErr != nil {
+			return nil, apiErr
 		}
+		if len(info.ParamOverride) > 0 {
+			jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
+			if err != nil {
+				return nil, newAPIErrorFromParamOverride(err)
+			}
+		}
+	}
+	if apiErr := requestplugin.Egress(c, info, jsonData); apiErr != nil {
+		return nil, apiErr
 	}
 
 	jsonData, err = anonymizeRelayRequestJSON(c, info, types.RelayFormatOpenAIResponses, jsonData)

@@ -1,11 +1,11 @@
 package model_setting
 
 import (
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/MoeForge/moego/regexp"
 	"new-router/common"
 	"new-router/setting/config"
 )

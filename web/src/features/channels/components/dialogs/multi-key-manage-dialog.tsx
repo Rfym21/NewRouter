@@ -92,13 +92,19 @@ import {
 } from '@/components/ui/tooltip'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { toIntlLocale } from '@/i18n/languages'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
-import { createServerError, getServerMessage } from '@/lib/server-error-message'
+import {
+  createServerError,
+  getServerMessage,
+  translateServerText,
+} from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -113,7 +119,11 @@ import {
   enableMultiKey,
   getMultiKeyStatus,
 } from '../../api'
-import { MULTI_KEY_FILTER_OPTIONS, MULTI_KEY_STATUS } from '../../constants'
+import {
+  CHANNEL_TYPE_TASK_PLUGIN,
+  MULTI_KEY_FILTER_OPTIONS,
+  MULTI_KEY_STATUS,
+} from '../../constants'
 import {
   useMultiKeyBatchTest,
   type MultiKeyTestResultMap,
@@ -136,6 +146,7 @@ import {
   type TestBucket,
   type TestBucketOption,
 } from '../../lib'
+import { formatChannelBalanceSummary } from '../../lib/channel-balance'
 import type {
   Channel,
   KeyStatus,
@@ -143,6 +154,7 @@ import type {
   MultiKeyBatchErrorCode,
   MultiKeyConfirmAction,
 } from '../../types'
+import { ChannelBalanceDetails } from '../channel-balance-details'
 import { useChannels } from '../channels-provider'
 import { MultiKeyBulkActions } from './multi-key-bulk-actions'
 import { StatisticsCard } from './multi-key-statistics-card'
@@ -469,6 +481,8 @@ function getMultiKeyColumnClass(columnId: string) {
       return 'w-24 min-w-24 whitespace-nowrap'
     case 'status':
       return 'w-36 min-w-36 whitespace-nowrap'
+    case 'balance':
+      return 'w-56 min-w-56 whitespace-normal'
     case 'test-result':
       return 'w-80 min-w-80 max-w-80 whitespace-normal'
     case 'actions':
@@ -707,7 +721,13 @@ function MultiKeyManageDialogContent({
   onOpenChange,
   currentRow,
 }: MultiKeyManageDialogContentProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  // A plugin channel queries the balance of each key.
+  const keyBalances =
+    currentRow.type === CHANNEL_TYPE_TASK_PLUGIN
+      ? currentRow.balance_detail?.keys
+      : undefined
   const queryClient = useQueryClient()
   const { copyToClipboard } = useCopyToClipboard()
   const currentUser = useAuthStore((s) => s.auth.user)
@@ -897,6 +917,25 @@ function MultiKeyManageDialogContent({
    * the invalidation effect below already names as the real fix.
    */
   const expectedKeyCount = snapshot?.channelKeyCount ?? loadedKeyCount
+
+  // A confirmed action reloads the table, which can remove the button that
+  // asked for it. Focus then comes back into this dialog rather than to
+  // whatever opened the dialog, so the next Escape closes only this dialog.
+  const confirmOpenerRef = useRef<HTMLElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+
+  const openConfirm = (action: MultiKeyConfirmAction) => {
+    const opener = document.activeElement
+    confirmOpenerRef.current = opener instanceof HTMLElement ? opener : null
+    setConfirmAction(action)
+  }
+
+  const getConfirmFinalFocus = () => {
+    const opener = confirmOpenerRef.current
+    return opener && bodyRef.current?.contains(opener)
+      ? opener
+      : bodyRef.current
+  }
 
   useEffect(() => {
     if (!error) return
@@ -1482,6 +1521,24 @@ function MultiKeyManageDialogContent({
   const columns = useMemo<ColumnDef<KeyStatus>[]>(
     () => [
       {
+        // First, so the row's accessible name opens with its key number rather
+        // than the selection checkbox's label.
+        id: 'index',
+        header: t('Index'),
+        cell: ({ row }) => (
+          <span
+            className='font-mono'
+            title={t(
+              'The number is the position of the key in the channel key list; it changes when a key is deleted.'
+            )}
+          >
+            {`#${row.original.index + 1} / ${loadedKeyCount}`}
+          </span>
+        ),
+        enableSorting: false,
+        size: 96,
+      },
+      {
         id: 'select',
         // All-rows variant, not the page variant: this table paginates client
         // side and the operator has to be able to select across pages.
@@ -1513,22 +1570,6 @@ function MultiKeyManageDialogContent({
         size: 44,
       },
       {
-        id: 'index',
-        header: t('Index'),
-        cell: ({ row }) => (
-          <span
-            className='font-mono'
-            title={t(
-              'The number is the position of the key in the channel key list; it changes when a key is deleted.'
-            )}
-          >
-            {`#${row.original.index + 1} / ${loadedKeyCount}`}
-          </span>
-        ),
-        enableSorting: false,
-        size: 96,
-      },
-      {
         id: 'status',
         header: t('Status'),
         cell: ({ row }) => {
@@ -1555,6 +1596,34 @@ function MultiKeyManageDialogContent({
         enableSorting: false,
         size: 144,
       },
+      ...(keyBalances
+        ? ([
+            {
+              id: 'balance',
+              header: t('Balance'),
+              cell: ({ row }: { row: Row<KeyStatus> }) => {
+                const result = keyBalances[String(row.original.index)]
+                if (!result) return '-'
+                return (
+                  <div className='max-w-56 space-y-0.5 whitespace-normal'>
+                    <div className='font-medium'>
+                      {/* A key has no USD balance of its own. */}
+                      {formatChannelBalanceSummary(result, Number.NaN, {
+                        locale,
+                      })}
+                    </div>
+                    <ChannelBalanceDetails
+                      result={result}
+                      className='text-muted-foreground'
+                    />
+                  </div>
+                )
+              },
+              enableSorting: false,
+              size: 224,
+            },
+          ] as ColumnDef<KeyStatus>[])
+        : []),
       {
         id: 'test-result',
         // Named after what it really reports: the provider's own status code.
@@ -1623,7 +1692,9 @@ function MultiKeyManageDialogContent({
         header: t('Disabled Reason'),
         cell: ({ row }) => (
           <span className='text-muted-foreground'>
-            {row.original.reason || '-'}
+            {row.original.reason
+              ? translateServerText(t, row.original.reason)
+              : '-'}
           </span>
         ),
         enableSorting: false,
@@ -1653,7 +1724,9 @@ function MultiKeyManageDialogContent({
       handleRowTest,
       isBatchTesting,
       isRowActionBlocked,
+      keyBalances,
       loadedKeyCount,
+      locale,
       t,
       testResults,
       testingIndexes,
@@ -2190,6 +2263,10 @@ function MultiKeyManageDialogContent({
       if (response?.success) {
         toast.success(getServerMessage(response) || t('Operation successful'))
         queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+        // A plugin channel's edit drawer lists the same lines beside this dialog.
+        queryClient.invalidateQueries({
+          queryKey: channelsQueryKeys.pluginCredentials(channelId),
+        })
         if (isDeleteAction) {
           await resyncAfterDelete()
         } else {
@@ -2342,12 +2419,17 @@ function MultiKeyManageDialogContent({
         description={t(
           'Manage multi-key status and configuration for this channel'
         )}
-        contentClassName='flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-5xl flex-col'
+        // Key balances add a column, which needs the wider dialog.
+        contentClassName={cn(
+          'flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-5xl flex-col',
+          keyBalances && 'sm:max-w-5xl'
+        )}
         titleClassName='flex items-center gap-2'
         contentHeight='min(72vh, 720px)'
         bodyClassName='flex h-full min-h-0 flex-col overflow-hidden'
       >
         <div
+          ref={bodyRef}
           className='flex h-full min-h-0 flex-col gap-4 overflow-hidden'
           onKeyDownCapture={handleEscapeCapture}
         >
@@ -2545,7 +2627,7 @@ function MultiKeyManageDialogContent({
                 <Button
                   variant='default'
                   size='sm'
-                  onClick={() => setConfirmAction({ type: 'enable-all' })}
+                  onClick={() => openConfirm({ type: 'enable-all' })}
                   disabled={isChannelWideBlocked}
                   title={channelWideHint || undefined}
                 >
@@ -2558,7 +2640,7 @@ function MultiKeyManageDialogContent({
                 <Button
                   variant='destructive'
                   size='sm'
-                  onClick={() => setConfirmAction({ type: 'disable-all' })}
+                  onClick={() => openConfirm({ type: 'disable-all' })}
                   disabled={isChannelWideBlocked}
                   title={channelWideHint || undefined}
                 >
@@ -2573,7 +2655,7 @@ function MultiKeyManageDialogContent({
                   size='sm'
                   onClick={() => {
                     if (!canEditSensitive) return
-                    setConfirmAction({ type: 'delete-disabled' })
+                    openConfirm({ type: 'delete-disabled' })
                   }}
                   disabled={isChannelWideBlocked || !canEditSensitive}
                   title={
@@ -2822,6 +2904,7 @@ function MultiKeyManageDialogContent({
         destructive={isDestructiveAction(confirmAction)}
         isLoading={isPerformingAction}
         handleConfirm={() => void performAction()}
+        finalFocus={getConfirmFinalFocus}
       >
         {confirmAction?.type === 'disable' && (
           <div className='grid gap-2'>

@@ -17,6 +17,7 @@ import (
 	pluginruntime "new-router/pkg/jsplugin"
 	"new-router/relay"
 	relaycommon "new-router/relay/common"
+	"new-router/relay/requestplugin"
 	"new-router/relaykit/types"
 	"new-router/service"
 )
@@ -40,6 +41,11 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	var relayInfoErr error
 	var outcome *taskSubmissionOutcome
 	var taskErr *dto.TaskError
+	// The request plugins' report hooks receive the submission once the
+	// client has the response.
+	defer func() {
+		requestplugin.Report(c, types.RelayFormatTask, relayInfo, nil, taskReportError(taskErr))
+	}()
 	// DashScope bills the images as soon as it accepts the upstream call. A
 	// client that gives up while the submission is in flight must not cancel
 	// that call, the task row, its settlement, or its consume log, so the

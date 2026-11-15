@@ -263,6 +263,7 @@ func updatePasskeyDomainOptions(values map[string]string, preview bool, confirma
 	if err != nil {
 		return change, err
 	}
+	BumpSyncTopic(SyncTopicOptions)
 	applyPasskeyDomainOptions(values)
 	for key, value := range values {
 		if !IsPasskeyDomainOption(key) && !isAnonymizationAnalyzerOption(key) {

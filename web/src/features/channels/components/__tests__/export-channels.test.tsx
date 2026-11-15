@@ -17,6 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from '@tanstack/react-router'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -36,8 +43,11 @@ vi.mock('../channels-provider', () => ({
     setEnableTagMode: vi.fn(),
     idSort: false,
     setIdSort: vi.fn(),
+    sorting: [],
+    setSorting: vi.fn(),
     batchMode: false,
     setBatchMode: vi.fn(),
+    setPriorityActionContainer: vi.fn(),
     upstream: { detectAllUpdates: vi.fn(), applyAllUpdates: vi.fn() },
   }),
 }))
@@ -48,7 +58,7 @@ afterEach(() => {
   useAuthStore.getState().auth.reset()
 })
 
-function mount() {
+async function mount() {
   useAuthStore.getState().auth.setUser({ id: 1, username: 'root', role: 100 })
   vi.spyOn(api, 'get').mockResolvedValue({
     data: {
@@ -61,9 +71,21 @@ function mount() {
       },
     },
   })
+  const root = createRootRoute()
+  const auth = createRoute({ getParentRoute: () => root, id: '_authenticated' })
+  const channelsRoute = createRoute({
+    getParentRoute: () => auth,
+    path: 'channels/',
+    component: () => <ChannelsPrimaryButtons />,
+  })
+  const router = createRouter({
+    routeTree: root.addChildren([auth.addChildren([channelsRoute])]),
+    history: createMemoryHistory({ initialEntries: ['/channels/'] }),
+  })
+  await router.load()
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <ChannelsPrimaryButtons />
+      <RouterProvider router={router} />
     </QueryClientProvider>
   )
 }
@@ -86,9 +108,9 @@ it('binds channel export to a dedicated proof and downloads only after verificat
             },
     },
   }))
-  mount()
+  await mount()
   const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: 'Open menu' }))
+  await user.click(screen.getByRole('button', { name: 'More actions' }))
   await user.click(
     await screen.findByRole('menuitem', { name: 'Export Channels' })
   )
@@ -142,9 +164,9 @@ it('cancels a pending export before downloading when its view unmounts', async (
     }
     return pending
   })
-  const view = mount()
+  const view = await mount()
   const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: 'Open menu' }))
+  await user.click(screen.getByRole('button', { name: 'More actions' }))
   await user.click(
     await screen.findByRole('menuitem', { name: 'Export Channels' })
   )

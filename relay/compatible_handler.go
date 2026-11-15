@@ -14,6 +14,7 @@ import (
 	relaycommon "new-router/relay/common"
 	relayconstant "new-router/relay/constant"
 	"new-router/relay/helper"
+	"new-router/relay/requestplugin"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/service"
@@ -103,6 +104,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
+		if newAPIError = requestplugin.PassThrough(c, info, storage); newAPIError != nil {
+			return newAPIError
+		}
 		if anonymizerSession(c, info) != nil {
 			jsonData, err := storage.Bytes()
 			if err != nil {
@@ -157,12 +161,18 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 		}
 
+		if jsonData, newAPIError = requestplugin.Outbound(c, info, jsonData); newAPIError != nil {
+			return newAPIError
+		}
 		// apply param override
 		if len(info.ParamOverride) > 0 {
 			jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
 			if err != nil {
 				return newAPIErrorFromParamOverride(err)
 			}
+		}
+		if newAPIError = requestplugin.Egress(c, info, jsonData); newAPIError != nil {
+			return newAPIError
 		}
 
 		jsonData, err = anonymizeRelayRequestJSON(c, info, info.GetFinalRequestRelayFormat(), jsonData)

@@ -9,6 +9,7 @@ import (
 	"new-router/logger"
 	relaycommon "new-router/relay/common"
 	"new-router/relay/helper"
+	"new-router/relay/requestplugin"
 	"new-router/relaykit/dto"
 	"new-router/relaykit/types"
 	"new-router/service"
@@ -50,11 +51,17 @@ func EmbeddingHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 
+	if jsonData, newAPIError = requestplugin.Outbound(c, info, jsonData); newAPIError != nil {
+		return newAPIError
+	}
 	if len(info.ParamOverride) > 0 {
 		jsonData, err = relaycommon.ApplyParamOverrideWithRelayInfo(jsonData, info)
 		if err != nil {
 			return newAPIErrorFromParamOverride(err)
 		}
+	}
+	if newAPIError = requestplugin.Egress(c, info, jsonData); newAPIError != nil {
+		return newAPIError
 	}
 
 	jsonData, err = anonymizeRelayRequestJSON(c, info, types.RelayFormatEmbedding, jsonData)

@@ -21,6 +21,7 @@ import (
 	relaycommon "new-router/relay/common"
 	relayconstant "new-router/relay/constant"
 	"new-router/relay/helper"
+	"new-router/relay/requestplugin"
 	"new-router/relaykit/types"
 	"new-router/service"
 )
@@ -248,6 +249,11 @@ func serveTaskPluginProtocol(
 	var outcome *taskSubmissionOutcome
 	var taskErr *dto.TaskError
 	var relayInfoErr error
+	// The request plugins' report hooks receive the submission once the
+	// client has the response.
+	defer func() {
+		requestplugin.Report(c, types.RelayFormatTask, relayInfo, nil, taskReportError(taskErr))
+	}()
 	submissionStage := "relay_info"
 	// A Responses client only observes an asynchronous task. Once admitted,
 	// disconnecting that observer must not cancel submission, persistence, or
@@ -1237,6 +1243,12 @@ func respondPluginProtocolSubmissionError(c *gin.Context, taskErr *dto.TaskError
 	status := http.StatusInternalServerError
 	if taskErr != nil && taskErr.StatusCode >= 400 && taskErr.StatusCode <= 599 {
 		status = taskErr.StatusCode
+	}
+	if requestplugin.Stopped(taskErr) {
+		// A request plugin's stop keeps its code and message, as on chat
+		// routes.
+		respondPluginProtocolError(c, status, taskErr.Code, common.MessageWithRequestId(taskErr.Message, c.GetString(common.RequestIdKey)))
+		return
 	}
 	switch status {
 	case http.StatusBadRequest:

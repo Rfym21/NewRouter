@@ -1,9 +1,9 @@
 package service
 
 import (
-	"regexp"
 	"sync"
 
+	"github.com/MoeForge/moego/regexp"
 	"new-router/setting/model_setting"
 )
 

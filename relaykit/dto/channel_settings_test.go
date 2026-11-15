@@ -2,9 +2,9 @@ package dto
 
 import (
 	"encoding/json"
-	"regexp"
 	"testing"
 
+	"github.com/MoeForge/moego/regexp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"new-router/relaykit/types"

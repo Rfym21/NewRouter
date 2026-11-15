@@ -68,7 +68,7 @@ func InitEnv() {
 	}
 	initUserSessionSettings()
 	if os.Getenv("SQLITE_PATH") != "" {
-		SQLitePath = os.Getenv("SQLITE_PATH")
+		SQLitePath = sqliteDSN(os.Getenv("SQLITE_PATH"))
 	}
 	if *LogDir != "" {
 		var err error
@@ -156,6 +156,8 @@ func positiveUserSessionEnv(name string, fallback int) int {
 
 func initConstantEnv() {
 	constant.DifyDebug = GetEnvOrDefaultBool("DIFY_DEBUG", true)
+	// 文件下载/请求体大小与流式缓冲上限由 runtime_setting 热更新,见 ApplyToRuntime。
+	constant.PluginMemoryLimitMB = GetEnvOrDefault("PLUGIN_MEMORY_LIMIT_MB", 512)
 	constant.AnonymousRequestBodyLimitKB = GetEnvOrDefault("ANONYMOUS_REQUEST_BODY_LIMIT_KB", 512)
 	constant.UpdateTask = GetEnvOrDefaultBool("UPDATE_TASK", true)
 	constant.TaskPluginEnabled = GetEnvOrDefaultBool("TASK_PLUGIN_ENABLED", true)

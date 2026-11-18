@@ -175,7 +175,7 @@ export function ChannelsPrimaryButtons() {
 
   return (
     <>
-      <div className='flex flex-wrap items-center gap-2'>
+      <div className='flex flex-wrap items-center gap-2 max-sm:min-w-0 max-sm:w-full max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:pb-1 max-sm:[scrollbar-width:none]'>
         <NodeSyncIndicator topics={['channels']} />
         <div ref={setPriorityActionContainer} className='empty:hidden' />
         {/* Desktop: Toggle switches visible */}

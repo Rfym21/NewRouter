@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  Archive,
   Box,
   ClipboardList,
   CreditCard,
@@ -76,12 +77,12 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
         title: t('General'),
         items: [
           {
-            title: t('Overview'),
+            title: t('Dashboard'),
             url: '/dashboard/overview',
             icon: Activity,
           },
           {
-            title: t('Dashboard'),
+            title: t('Models Dashboard'),
             url: '/dashboard/models',
             icon: LayoutDashboard,
           },
@@ -171,13 +172,13 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {
-            title: t('Export Management'),
+            title: t('Log Archive'),
             url: '/log-export/management',
-            icon: FileArchive,
+            icon: Archive,
             requiredRole: ROLE.SUPER_ADMIN,
           },
           {
-            title: t('Plugins'),
+            title: t('Plugin Marketplace'),
             url: '/task-plugins',
             icon: PlugZap,
             requiredRole: ROLE.SUPER_ADMIN,

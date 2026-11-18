@@ -629,7 +629,7 @@ export function OverviewDashboard() {
 
   return (
     <SectionPageLayout>
-      <SectionPageLayout.Title>{t('Overview')}</SectionPageLayout.Title>
+      <SectionPageLayout.Title>{t('Dashboard')}</SectionPageLayout.Title>
       <SectionPageLayout.Actions>
         {setupStatusReady && setupComplete && (
           <Button

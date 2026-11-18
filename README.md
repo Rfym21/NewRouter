@@ -4,11 +4,19 @@ https://github.com/Rfym21/WorkSpace/tree/main/Projects/NewRouter (Current)
 
 https://github.com/QuantumNous/new-api (Upstream)
 
-当前同步基准：官方 `main` 的 Commit(`b388140acfd80369ec6243b16869daff1b4051f4`)，同步日期 2026-11-15。
+当前同步基准：官方 `main` 的 Commit(`a1d1fb0cca76d3a1a7f3a1995d09abd1e9804c73`)，同步日期 2026-11-18。
 
 最初基于 Commit(`4e570389dd433a717373ce9c9b822b59f5ed3d5d`) 二次开发。
 
-本次同步包含上次基准 `8c8940c999c6c38031dacdd0139cf7b0e1c38308` 之后的 24 个官方提交，保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享、审计日志二次验证清除，以及自定义前端。上游的敏感词迁移（`MigrateSensitiveWords`）暂不执行，旧选项与本地渠道级策略继续生效，待迁移到请求插件后再切换。
+本次同步包含上次基准 `b388140acfd80369ec6243b16869daff1b4051f4` 之后的 13 个官方提交，继续保留 New Router 的渠道标签权限、计费扩展、模型与响应去匿名化、日志异步导出和分享、审计日志二次验证清除，以及自定义前端。
+
+- 请求处理插件新增声明作用域：插件 meta 可声明模型与渠道类型，管理员确认一次后自动覆盖新请求；本地渠道级作用域（`channels` / `exclude_channels`）继续保留，两者各自独立匹配。
+- GPT-6 聊天参数规则应用到 `gpt-6.2-astra` / `gpt-6.2-sol`；Gemini 4 按模型映射思考档位，文本分段按原样拼接。
+- 请求触发的错误不再自动禁用渠道；渠道批量标签变更改为在事务内读取。
+- 前端统一缓存计费分类与时长标签，特殊分组倍率规则默认折叠。
+- 请求检查分组已并入 `/request-processing`，System Settings 下的旧「Request checks」入口移除。
+
+上游的敏感词迁移（`MigrateSensitiveWords`）仍暂不执行，旧选项与本地渠道级策略继续生效，待迁移到请求插件后再切换。
 
 - 修复用户与令牌 Redis 缓存跨槽错误，并为鉴权缓存加入完整性校验；双因素认证锁定过期后重新开始失败计数。
 - 模型价格保存前先审阅变更，并对缺失或失效的插件价格给出处理引导。

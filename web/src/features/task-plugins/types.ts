@@ -85,6 +85,8 @@ export type TaskPluginMeta = {
   }[]
   /** The schema of a request processing instance's config. */
   configSchema?: RequestPluginConfigSchema
+  /** The models and channel types a request processing plugin is made for. */
+  scope?: { models?: string[] | null; channelTypes?: number[] | null } | null
 }
 
 /** One field of `meta.configSchema`, the subset the gateway validates. */
@@ -134,6 +136,12 @@ export type RequestPluginConfigSchema = {
  * are its own scope; channels bind instances by id. `models` limits it to the
  * models clients ask for; empty means every model.
  */
+/** A plugin's scope as an administrator confirmed it. */
+export type RequestPluginScope = {
+  models: string[]
+  channel_types: number[]
+}
+
 export type RequestPluginInstance = {
   id: string
   name: string
@@ -149,6 +157,8 @@ export type RequestPluginInstance = {
   /** Marks an instance a host policy owns; the editor must not change it. */
   managed_by?: string
   config: Record<string, unknown>
+  /** Set when the instance runs where its plugin's scope says. */
+  plugin_scope?: RequestPluginScope | null
 }
 
 /**

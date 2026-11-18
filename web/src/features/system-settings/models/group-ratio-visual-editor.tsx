@@ -1064,7 +1064,7 @@ function GroupOverrideRules({
             {groupGroupRatioList.length > 0 && (
               <div className='space-y-3'>
                 {groupGroupRatioList.map((userGroupData) => (
-                  <Collapsible key={userGroupData.userGroup} defaultOpen>
+                  <Collapsible key={userGroupData.userGroup}>
                     <div className='rounded-lg border'>
                       <div className='flex items-center justify-between p-4'>
                         <div className='flex items-center gap-2'>

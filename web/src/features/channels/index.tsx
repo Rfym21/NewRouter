@@ -87,10 +87,10 @@ export function Channels() {
 
   return (
     <ChannelsProvider>
-      <SectionPageLayout fixedContent>
+      <SectionPageLayout fixedContent stackActionsOnMobile>
         <SectionPageLayout.Title>
           <span className='flex min-w-0 items-center gap-2'>
-            <span className='truncate'>{t('Channels')}</span>
+            <span className='min-w-0 truncate'>{t('Channels')}</span>
             {retryBadge}
           </span>
         </SectionPageLayout.Title>

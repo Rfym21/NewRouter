@@ -18,7 +18,16 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { Table } from '@tanstack/react-table'
 import { ChevronDown, Loader2, SlidersHorizontal } from 'lucide-react'
-import { useState, type ComponentProps, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { DataTableViewOptions } from '@/components/data-table'
@@ -88,11 +97,114 @@ export function LogsFilterInput(props: ComponentProps<typeof Input>) {
   )
 }
 
+const FAB_POSITION_KEY = 'newapi:logs-filter-fab:v1'
+
+/** The saved spot of the floating filter button, when one was dragged. */
+function readFabPosition(): { x: number; y: number } | null {
+  try {
+    const raw = localStorage.getItem(FAB_POSITION_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { x?: number; y?: number }
+    if (typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return null
+    return { x: parsed.x, y: parsed.y }
+  } catch {
+    return null
+  }
+}
+
 export function LogsFilterToolbar<TData>(props: LogsFilterToolbarProps<TData>) {
   const { t } = useTranslation()
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const isMobile = useMediaQuery('(max-width: 640px)')
+  const [fabPosition, setFabPosition] = useState(readFabPosition)
+  const [fabDragging, setFabDragging] = useState(false)
+  const fabRef = useRef<HTMLDivElement | null>(null)
+  const fabDrag = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    originX: number
+    originY: number
+    moved: boolean
+  } | null>(null)
+  const suppressFabClick = useRef(false)
+
+  const clampFab = useCallback((position: { x: number; y: number }) => {
+    const element = fabRef.current
+    const width = element?.offsetWidth ?? 96
+    const height = element?.offsetHeight ?? 44
+    const margin = 8
+    return {
+      x: Math.min(
+        Math.max(position.x, margin),
+        Math.max(margin, window.innerWidth - width - margin)
+      ),
+      y: Math.min(
+        Math.max(position.y, margin),
+        Math.max(margin, window.innerHeight - height - margin)
+      ),
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!fabPosition) return
+    const onResize = () =>
+      setFabPosition((current) => (current ? clampFab(current) : current))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [fabPosition, clampFab])
+
+  const handleFabPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const element = fabRef.current
+    if (!element) return
+    const rect = element.getBoundingClientRect()
+    fabDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: rect.left,
+      originY: rect.top,
+      moved: false,
+    }
+    element.setPointerCapture?.(event.pointerId)
+  }
+
+  const handleFabPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = fabDrag.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const dx = event.clientX - drag.startX
+    const dy = event.clientY - drag.startY
+    if (!drag.moved && Math.hypot(dx, dy) < 6) return
+    drag.moved = true
+    setFabDragging(true)
+    setFabPosition(clampFab({ x: drag.originX + dx, y: drag.originY + dy }))
+  }
+
+  const handleFabPointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = fabDrag.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    fabDrag.current = null
+    setFabDragging(false)
+    if (!drag.moved) return
+    // A drag must not count as the tap that opens the panel.
+    suppressFabClick.current = true
+    setFabPosition((current) => {
+      if (current) {
+        try {
+          localStorage.setItem(FAB_POSITION_KEY, JSON.stringify(current))
+        } catch {
+          // Keep the spot for this visit when storage is unavailable.
+        }
+      }
+      return current
+    })
+  }
+
+  const fabStyle: CSSProperties = fabPosition
+    ? { left: fabPosition.x, top: fabPosition.y }
+    : { right: '1rem', bottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }
+
 
   const hasAdvancedFilters = props.advancedFilters != null
   const activeAdvancedCount =
@@ -147,13 +259,31 @@ export function LogsFilterToolbar<TData>(props: LogsFilterToolbarProps<TData>) {
         open={mobileFiltersOpen}
         onOpenChange={setMobileFiltersOpen}
       >
-        <div className='pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+1rem)] z-40 flex justify-end px-4'>
+        <div
+          ref={fabRef}
+          className={cn(
+            'fixed z-40 touch-none select-none',
+            fabDragging ? 'cursor-grabbing' : 'cursor-grab'
+          )}
+          style={fabStyle}
+          onPointerDown={handleFabPointerDown}
+          onPointerMove={handleFabPointerMove}
+          onPointerUp={handleFabPointerEnd}
+          onPointerCancel={handleFabPointerEnd}
+          onClickCapture={(event) => {
+            // A drag must not count as the tap that opens the panel.
+            if (!suppressFabClick.current) return
+            suppressFabClick.current = false
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+        >
           <DrawerTrigger asChild>
             <Button
               type='button'
               aria-label={t('Filter')}
               className={cn(
-                'pointer-events-auto h-11 gap-1.5 rounded-full px-4 shadow-lg',
+                'h-11 gap-1.5 rounded-full px-4 shadow-lg',
                 activeMobileFilterCount > 0 &&
                   'ring-primary/30 ring-2 ring-offset-1'
               )}

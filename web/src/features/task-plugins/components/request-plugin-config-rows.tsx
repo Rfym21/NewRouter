@@ -21,6 +21,7 @@ import type { CSSProperties } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { FieldDescription, FieldLegend, FieldSet } from '@/components/ui/field'
 import { resolveLocalizedText } from '@/lib/localized-text'
 import { cn } from '@/lib/utils'
@@ -84,7 +85,10 @@ export function RequestPluginConfigRows(props: RequestPluginConfigRowsProps) {
   const fields = Object.entries(items?.properties ?? {})
   const properties = items?.properties ?? {}
   const required = new Set(items?.required ?? [])
-  const table = requestPluginRowsAsTable(items)
+  // A phone has no room for the column grid, and the drawer owns horizontal
+  // pans, so small screens get one card per item instead.
+  const isMobile = useIsMobile()
+  const table = !isMobile && requestPluginRowsAsTable(items)
   const full =
     props.field.maxItems !== undefined &&
     props.rows.length >= props.field.maxItems

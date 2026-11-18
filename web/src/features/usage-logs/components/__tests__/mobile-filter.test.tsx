@@ -127,7 +127,9 @@ afterEach(async () => {
 it('applies the selected mobile date range directly and resets pagination while retaining filters', async () => {
   const router = await renderMobileFilter()
   const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: /^\d{4}-\d{2}/ }))
+  await user.click(screen.getByRole('button', { name: 'Filter' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Filter' })
+  await user.click(within(dialog).getByRole('button', { name: /^\d{4}-\d{2}/ }))
   fireEvent.change(screen.getByLabelText('Start Time'), {
     target: { value: '2026-09-07T09:30' },
   })
@@ -145,7 +147,6 @@ it('applies the selected mobile date range directly and resets pagination while 
     })
   )
 })
-
 it('applies mobile drawer filters only when Search is pressed', async () => {
   const router = await renderMobileFilter()
   const user = userEvent.setup()
@@ -170,35 +171,17 @@ it('applies mobile drawer filters only when Search is pressed', async () => {
   )
 })
 
-it('keeps all quick actions visible without opening a menu', async () => {
+it('keeps all quick actions inside the mobile panel', async () => {
   await renderMobileFilter()
   const user = userEvent.setup()
-  for (const name of [
-    'Hide',
-    'Export',
-    'Export Records',
-    'Filter',
-    'Search',
-    'View',
-  ]) {
-    expect(screen.getByRole('button', { name })).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Filter' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Filter' })
+  for (const name of ['Hide', 'Export', 'Export Records', 'View']) {
+    expect(within(dialog).getByRole('button', { name })).toBeVisible()
   }
-  expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument()
-  await user.click(screen.getByRole('button', { name: 'Hide' }))
-  expect(screen.getByRole('button', { name: 'Show' })).toBeVisible()
-  screen.getByRole('button', { name: 'Show' }).focus()
-  for (const name of [
-    'Export',
-    'Export Records',
-    'Filter',
-    'Search',
-    'View',
-  ]) {
-    await user.tab()
-    expect(screen.getByRole('button', { name })).toHaveFocus()
-  }
+  await user.click(within(dialog).getByRole('button', { name: 'Hide' }))
+  expect(within(dialog).getByRole('button', { name: 'Show' })).toBeVisible()
 })
-
 function LoadingFixture(props: { loading: boolean; onSearch: () => void }) {
   const table = useReactTable({
     data: [],
@@ -228,7 +211,9 @@ it('keeps Search visible while loading and prevents repeated searches', async ()
   const onSearch = vi.fn()
   const user = userEvent.setup()
   const view = render(<LoadingFixture loading onSearch={onSearch} />)
-  const search = screen.getByRole('button', { name: 'Search' })
+  await user.click(screen.getByRole('button', { name: 'Filter' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Filter' })
+  const search = within(dialog).getByRole('button', { name: 'Search' })
   expect(search).toBeVisible()
   expect(search).toBeDisabled()
   expect(search).toHaveAttribute('aria-busy', 'true')
@@ -239,7 +224,6 @@ it('keeps Search visible while loading and prevents repeated searches', async ()
   await user.click(search)
   expect(onSearch).toHaveBeenCalledTimes(1)
 })
-
 it('places the end action between Search and View on desktop', () => {
   function DesktopFixture() {
     const table = useReactTable({
@@ -265,44 +249,17 @@ it('places the end action between Search and View on desktop', () => {
   expect(names.slice(-4)).toEqual(['Reset', 'Search', 'Export', 'View'])
 })
 
-it('collapses only date and statistics while keeping the right-hand quick actions visible', async () => {
+it('keeps the date range and statistics inside the mobile panel', async () => {
   await renderMobileFilter()
   const user = userEvent.setup()
-  const date =
-    screen
-      .getByRole('button', { name: /^\d{4}-\d{2}/ })
-      .getAttribute('aria-label') ?? ''
-  expect(await screen.findByText('QPD')).toBeVisible()
-  await user.click(screen.getByRole('button', { name: 'Collapse' }))
-  expect(screen.getByRole('button', { name: 'Expand' })).toHaveAttribute(
-    'aria-expanded',
-    'false'
-  )
-  expect(screen.queryByRole('button', { name: date })).not.toBeInTheDocument()
   expect(screen.queryByText('QPD')).not.toBeInTheDocument()
-  const actions = screen.getByRole('group', { name: 'Actions' })
-  for (const name of [
-    'Hide',
-    'Export',
-    'Export Records',
-    'Filter',
-    'Search',
-    'View',
-  ]) {
-    expect(within(actions).getByRole('button', { name })).toBeVisible()
-  }
+  await user.click(screen.getByRole('button', { name: 'Filter' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Filter' })
+  expect(await within(dialog).findByText('QPD')).toBeVisible()
   expect(
-    within(actions).queryByRole('button', { name: 'Expand' })
-  ).not.toBeInTheDocument()
-  await user.click(screen.getByRole('button', { name: 'Expand' }))
-  expect(screen.getByRole('button', { name: 'Collapse' })).toHaveAttribute(
-    'aria-expanded',
-    'true'
-  )
-  expect(screen.getByRole('button', { name: date })).toBeVisible()
-  expect(await screen.findByText('QPD')).toBeVisible()
+    within(dialog).getByRole('button', { name: /^\d{4}-\d{2}/ })
+  ).toBeVisible()
 })
-
 it.each([
   { language: 'zh', resources: zh.translation },
   { language: 'zh-TW', resources: zhTW.translation },

@@ -89,6 +89,7 @@ function buildSearchSourceKey(values: {
   endTime?: unknown
   channel?: unknown
   model?: unknown
+  client?: unknown
   token?: unknown
   group?: unknown
   username?: unknown
@@ -101,6 +102,7 @@ function buildSearchSourceKey(values: {
     values.endTime,
     values.channel,
     values.model,
+    values.client,
     values.token,
     values.group,
     values.username,
@@ -156,6 +158,7 @@ export function CommonLogsFilterBar<TData>(
       endTime: searchParams.endTime,
       channel: searchParams.channel,
       model: searchParams.model,
+      client: searchParams.client,
       token: searchParams.token,
       group: searchParams.group,
       username: searchParams.username,
@@ -170,6 +173,7 @@ export function CommonLogsFilterBar<TData>(
       endTime: searchParams.endTime ? new Date(searchParams.endTime) : end,
       channel: searchParams.channel || undefined,
       model: searchParams.model || undefined,
+      client: searchParams.client || undefined,
       token: searchParams.token || undefined,
       group: searchParams.group || undefined,
       username: searchParams.username || undefined,
@@ -186,6 +190,7 @@ export function CommonLogsFilterBar<TData>(
     searchParams.endTime,
     searchParams.channel,
     searchParams.model,
+    searchParams.client,
     searchParams.token,
     searchParams.group,
     searchParams.username,
@@ -266,6 +271,7 @@ export function CommonLogsFilterBar<TData>(
   )
 
   const hasExpandedFilters =
+    !!filters.client ||
     !!filters.token ||
     !!filters.username ||
     !!filters.channel ||
@@ -274,9 +280,14 @@ export function CommonLogsFilterBar<TData>(
 
   const hasTypeFilter = logType !== LOG_TYPE_ALL_VALUE
   const hasAdditionalFilters =
-    !!filters.model || !!filters.group || hasTypeFilter || hasExpandedFilters
+    !!filters.model ||
+    !!filters.client ||
+    !!filters.group ||
+    hasTypeFilter ||
+    hasExpandedFilters
 
   const expandedFilterCount = [
+    filters.client,
     filters.token,
     isAdmin ? filters.username : undefined,
     isAdmin ? filters.channel : undefined,
@@ -465,6 +476,14 @@ export function CommonLogsFilterBar<TData>(
   )
   const advancedFilters = (
     <>
+      <LogsFilterField>
+        <LogsFilterInput
+          placeholder={t('Client')}
+          value={filters.client || ''}
+          onChange={(e) => handleChange('client', e.target.value)}
+          onKeyDown={handleKeyDown}
+        />
+      </LogsFilterField>
       <LogsFilterField>
         <LogsFilterInput
           placeholder={t('Token Name')}

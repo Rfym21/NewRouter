@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"new-router/common"
+	"new-router/pkg/clientua"
 	"new-router/setting/config"
 )
 
@@ -17,11 +18,15 @@ type LogSetting struct {
 	// MaxRangeDays is the longest time range a user can search in their logs
 	// and dashboard, and the longest range any export can cover.
 	MaxRangeDays int `json:"max_range_days"`
+	// ClientRules groups User-Agent keywords into a request client name.
+	// They are checked before the built-in client library.
+	ClientRules []clientua.CustomRule `json:"client_rules"`
 }
 
 var logSetting = LogSetting{
 	UserExportEnabled: true,
 	MaxRangeDays:      30,
+	ClientRules:       []clientua.CustomRule{},
 }
 
 func init() {
@@ -42,4 +47,9 @@ func ValidateLogMaxRangeDays(value string) error {
 		return common.NewMessage("The longest log time range must be at least 1 day")
 	}
 	return nil
+}
+
+// ValidateLogClientRules checks the JSON stored at log_setting.client_rules.
+func ValidateLogClientRules(value string) error {
+	return clientua.ValidateCustomRules(value)
 }

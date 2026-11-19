@@ -59,6 +59,7 @@ const COLUMN_DEFS: Array<{
   { key: 'group', labelKey: 'Group' },
   { key: 'type', labelKey: 'Type' },
   { key: 'model', labelKey: 'Model' },
+  { key: 'client', labelKey: 'Client' },
   { key: 'use_time', labelKey: 'Duration / First token' },
   { key: 'prompt', labelKey: 'Input' },
   { key: 'completion', labelKey: 'Output' },

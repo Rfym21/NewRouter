@@ -63,6 +63,23 @@ export type AnonymizationPreview = {
   anonymized: string
 }
 
+export type ClientUserAgentPreview = {
+  key: string
+  name: string
+  category: string
+  icon?: string
+  custom?: boolean
+}
+
+export async function previewClientUserAgent(userAgent: string) {
+  const response = await api.post<{
+    success: boolean
+    message?: string
+    data: ClientUserAgentPreview
+  }>('/api/option/client-ua/preview', { user_agent: userAgent })
+  return requireServerSuccess(response.data).data
+}
+
 export async function previewAnonymization(
   request: { rules: AnonymizationRule[]; text: string },
   signal?: AbortSignal

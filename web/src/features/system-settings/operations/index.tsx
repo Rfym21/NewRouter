@@ -54,6 +54,7 @@ const defaultOperationsSettings: OperationsSettings = {
   LogExportFileRetentionHours: 24,
   'log_setting.user_export_enabled': true,
   'log_setting.max_range_days': 30,
+  'log_setting.client_rules': '[]',
   'system_task_setting.retention_days': 30,
   'performance_setting.disk_cache_enabled': false,
   'performance_setting.disk_cache_threshold_mb': 10,

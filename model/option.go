@@ -408,6 +408,9 @@ func validateOptionValue(key string, value string) error {
 	if key == operation_setting.ChannelTestConcurrencyOptionKey {
 		return operation_setting.ValidateChannelTestConcurrency(value)
 	}
+	if key == "log_setting.client_rules" {
+		return operation_setting.ValidateLogClientRules(value)
+	}
 	if isLogRangeOption(key) {
 		return operation_setting.ValidateLogMaxRangeDays(value)
 	}

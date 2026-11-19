@@ -102,6 +102,7 @@ describe('usage log CSV export', () => {
       'prod',
       'default',
       'gpt-4o-mini',
+      '',
       '是',
       '2008',
       '16',

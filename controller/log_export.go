@@ -20,6 +20,7 @@ type LogExportRequest struct {
 	Username          string   `json:"username"`
 	TokenName         string   `json:"token_name"`
 	ModelName         string   `json:"model_name"`
+	Client            string   `json:"client"`
 	StartTimestamp    int64    `json:"start_timestamp"`
 	EndTimestamp      int64    `json:"end_timestamp"`
 	Channel           int      `json:"channel"`
@@ -103,6 +104,7 @@ func CreateLogExport(c *gin.Context) {
 		Username:          req.Username,
 		TokenName:         req.TokenName,
 		ModelName:         req.ModelName,
+		Client:            req.Client,
 		StartTimestamp:    req.StartTimestamp,
 		EndTimestamp:      req.EndTimestamp,
 		Channel:           req.Channel,

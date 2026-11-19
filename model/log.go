@@ -9,6 +9,7 @@ import (
 	"new-router/constant"
 	"new-router/logger"
 	"new-router/pkg/anonymizer"
+	"new-router/pkg/clientua"
 	"new-router/setting/operation_setting"
 	"new-router/types"
 
@@ -66,6 +67,7 @@ type Log struct {
 	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
 	TokenName         string `json:"token_name" gorm:"index;default:''"`
 	ModelName         string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
+	Client            string `json:"client" gorm:"type:varchar(64);index;default:''"`
 	Quota             int    `json:"quota" gorm:"default:0"`
 	PromptTokens      int    `json:"prompt_tokens" gorm:"default:0"`
 	CompletionTokens  int    `json:"completion_tokens" gorm:"default:0"`
@@ -287,9 +289,46 @@ func RecordTopupLog(userId int, content *common.Message, callerIp string, paymen
 	}
 }
 
+// logRequestClient classifies the incoming request's User-Agent and records
+// the icon and raw UA on the log metadata. The raw UA is admin-only; the
+// client name and icon are public so the log owner sees what made the request.
+func logRequestClient(c *gin.Context, other *LogOther) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	userAgent := strings.TrimSpace(c.Request.UserAgent())
+	if userAgent == "" {
+		return ""
+	}
+	result := clientua.Classify(userAgent, operation_setting.GetLogSetting().ClientRules)
+	if other != nil {
+		if result.Category != "" {
+			other.SetPublic("client_category", result.Category)
+		}
+		if result.Icon != "" {
+			other.SetPublic("client_icon", result.Icon)
+		}
+		other.SetAdmin("user_agent", truncateUserAgent(userAgent))
+	}
+	return result.Name
+}
+
+func truncateUserAgent(userAgent string) string {
+	const limit = 512
+	runes := []rune(userAgent)
+	if len(runes) <= limit {
+		return userAgent
+	}
+	return string(runes[:limit])
+}
+
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other *LogOther) {
 	other = appendAnonymizationLogInfo(c, other)
+	if other == nil {
+		other = NewLogOther()
+	}
+	clientName := logRequestClient(c, other)
 	content = anonymizer.FromContext(c).LogRedactor()(content)
 	logger.LogInfo(c, common.LogText("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, common.LocalLogPreview(content)))
 	username := c.GetString("username")
@@ -313,6 +352,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		CompletionTokens: 0,
 		TokenName:        tokenName,
 		ModelName:        modelName,
+		Client:           clientName,
 		Quota:            0,
 		ChannelId:        channelId,
 		TokenId:          tokenId,
@@ -358,6 +398,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		return
 	}
 	params.Other = appendAnonymizationLogInfo(c, params.Other)
+	if params.Other == nil {
+		params.Other = NewLogOther()
+	}
+	clientName := logRequestClient(c, params.Other)
 	if session := anonymizer.FromContext(c); session != nil {
 		redact := session.LogRedactor()
 		parts := make([]*common.Message, 0, len(params.Content))
@@ -399,6 +443,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		CompletionTokens: params.CompletionTokens,
 		TokenName:        params.TokenName,
 		ModelName:        params.ModelName,
+		Client:           clientName,
 		Quota:            params.Quota,
 		ChannelId:        params.ChannelId,
 		TokenId:          params.TokenId,
@@ -623,6 +668,7 @@ type LogFilter struct {
 	StartTimestamp    int64
 	EndTimestamp      int64
 	ModelName         string
+	Client            string
 	Username          string
 	TokenName         string
 	Channel           int
@@ -637,6 +683,9 @@ func (f LogFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
 		tx = tx.Where("logs.type = ?", f.Type)
 	}
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", f.ModelName); err != nil {
+		return nil, err
+	}
+	if tx, err = applyExplicitLogTextFilter(tx, "logs.client", f.Client); err != nil {
 		return nil, err
 	}
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.username", f.Username); err != nil {
@@ -830,7 +879,7 @@ type Stat struct {
 	Qpm   int `json:"qpm"`
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, client string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 
 	// 为rpm、tpm、qpm创建单独的查询(仅统计最近60秒窗口)
@@ -856,6 +905,12 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 		return stat, err
 	}
 	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "model_name", modelName); err != nil {
+		return stat, err
+	}
+	if tx, err = applyExplicitLogTextFilter(tx, "client", client); err != nil {
+		return stat, err
+	}
+	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "client", client); err != nil {
 		return stat, err
 	}
 	if channel != 0 {

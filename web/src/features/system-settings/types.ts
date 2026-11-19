@@ -381,6 +381,7 @@ export type OperationsSettings = {
   LogExportFileRetentionHours: number
   'log_setting.user_export_enabled': boolean
   'log_setting.max_range_days': number
+  'log_setting.client_rules': string
   'system_task_setting.retention_days': number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number

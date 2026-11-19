@@ -92,6 +92,7 @@ type LogExportFilters struct {
 	Username          string `json:"username,omitempty"`
 	TokenName         string `json:"token_name,omitempty"`
 	ModelName         string `json:"model_name,omitempty"`
+	Client            string `json:"client,omitempty"`
 	StartTimestamp    int64  `json:"start_timestamp"`
 	EndTimestamp      int64  `json:"end_timestamp"`
 	Channel           int    `json:"channel,omitempty"`
@@ -115,6 +116,7 @@ var logExportColumns = []logExportColumn{
 	{Key: "group", Label: "分组"},
 	{Key: "type", Label: "类型"},
 	{Key: "model", Label: "模型"},
+	{Key: "client", Label: "客户端"},
 	{Key: "use_time", Label: "用时/首字"},
 	{Key: "prompt", Label: "输入"},
 	{Key: "completion", Label: "输出"},

@@ -83,6 +83,7 @@ export interface CreateLogExportPayload {
   username?: string
   token_name?: string
   model_name?: string
+  client?: string
   start_timestamp: number
   end_timestamp: number
   channel?: number

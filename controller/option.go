@@ -11,6 +11,7 @@ import (
 
 	"new-router/common"
 	"new-router/model"
+	"new-router/pkg/clientua"
 	"new-router/service"
 	"new-router/setting"
 	"new-router/setting/billing_setting"
@@ -182,6 +183,24 @@ func writePasskeyDomainSettingsError(c *gin.Context, err error) {
 		return
 	}
 	common.ApiError(c, err)
+}
+
+// PreviewClientUserAgent classifies a User-Agent with the current custom rules
+// and built-in client library, so an administrator can check a rule before a
+// request uses it.
+func PreviewClientUserAgent(c *gin.Context) {
+	var request struct {
+		UserAgent string `json:"user_agent"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+		return
+	}
+	if len(request.UserAgent) > 8192 {
+		request.UserAgent = request.UserAgent[:8192]
+	}
+	result := clientua.Classify(request.UserAgent, operation_setting.GetLogSetting().ClientRules)
+	common.ApiSuccess(c, result)
 }
 
 func UpdateOption(c *gin.Context) {

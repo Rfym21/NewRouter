@@ -57,6 +57,7 @@ function Fixture({
             LogExportFileRetentionHours: 24,
             'log_setting.user_export_enabled': true,
             'log_setting.max_range_days': 30,
+            'log_setting.client_rules': '[]',
             'system_task_setting.retention_days': 30,
           }}
         />
@@ -108,6 +109,7 @@ test('recording, export and cleanup modules share the log settings page', async 
     screen.getAllByRole('heading', { level: 4 }).map((h) => h.textContent)
   ).toEqual([
     'Log recording',
+    'Request client detection',
     'Log search and export',
     'System task records',
     'Clean history logs',

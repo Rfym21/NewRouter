@@ -51,6 +51,7 @@ export interface CommonFilters {
  */
 export interface CommonLogFilters extends CommonFilters {
   model?: string
+  client?: string
   token?: string
   group?: string
   username?: string
@@ -202,6 +203,9 @@ export type RequestPluginAdminStep = {
 export interface LogOtherData {
   // Count only; anonymized values and replacement mappings are never logged.
   anonymization_count?: number
+  // The request client detected from User-Agent: category and icon token.
+  client_category?: string
+  client_icon?: string
   admin_info?: {
     request_policy?: PolicyEvent[]
     request_plugins?: RequestPluginAdminStep[]
@@ -211,6 +215,8 @@ export interface LogOtherData {
     local_count_tokens?: boolean
     usage_billing_path?: UsageBillingPath | string
     channel_affinity?: ChannelAffinityInfo
+    // The incoming User-Agent, admin-only.
+    user_agent?: string
     // Top-up audit fields (type=1, admin only)
     payment_method?: string
     callback_payment_method?: string

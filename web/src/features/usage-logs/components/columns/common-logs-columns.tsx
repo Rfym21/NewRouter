@@ -75,6 +75,7 @@ import {
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
 import { AnonymizationBadge } from '../anonymization-badge'
+import { ClientBadge } from '../client-badge'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
@@ -704,6 +705,26 @@ export function useCommonLogsColumns(
           )
         },
         meta: { mobileTitle: true },
+      },
+      {
+        accessorKey: 'client',
+        header: t('Client'),
+        cell: function ClientCell({ row }) {
+          const log = row.original
+          if (!isDisplayableLogType(log.type)) return null
+          if (!log.client) {
+            return <span className='text-muted-foreground/60 text-xs'>-</span>
+          }
+          const other = parseLogOther(log.other)
+          return (
+            <ClientBadge
+              name={log.client}
+              icon={other?.client_icon}
+              rawUserAgent={isAdmin ? other?.admin_info?.user_agent : undefined}
+            />
+          )
+        },
+        size: 150,
       },
       {
         accessorKey: 'is_stream',

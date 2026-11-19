@@ -218,6 +218,7 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/request_policy", controller.GetRequestPolicy)
 			optionRoute.PATCH("/request_policy", controller.UpdateRequestPolicy)
 			optionRoute.POST("/anonymization/preview", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewAnonymization)
+			optionRoute.POST("/client-ua/preview", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewClientUserAgent)
 			optionRoute.PUT("/", controller.UpdateOption)
 			// 分组倍率定时任务(动态定价):与 GroupRatio 编辑同级,root 权限。
 			optionRoute.GET("/ratio_schedules", controller.GetRatioSchedules)

@@ -80,6 +80,7 @@ func TestClickHouseLogTTLClause(t *testing.T) {
 func TestClickHouseLogCreateTableSQL(t *testing.T) {
 	withoutTTL := clickHouseLogCreateTableSQL(0)
 	assert.Contains(t, withoutTTL, "CREATE TABLE IF NOT EXISTS logs")
+	assert.Contains(t, withoutTTL, "client String DEFAULT ''")
 	assert.Contains(t, withoutTTL, "ENGINE = MergeTree()")
 	assert.Contains(t, withoutTTL, "PARTITION BY toYYYYMM(toDateTime(created_at))")
 	assert.Contains(t, withoutTTL, "ORDER BY (created_at, request_id)")

@@ -55,6 +55,12 @@ import { useResetForm } from '../hooks/use-reset-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 import { AuditLogCleanup } from './audit-log-cleanup'
+import {
+  parseClientRules,
+  serializeClientRules,
+  validateClientRules,
+} from './client-rules'
+import { ClientRulesEditor } from './client-rules-editor'
 import { HistoryLogCleanup } from './history-log-cleanup'
 import { LogExportFields } from './log-export-section'
 import { ServerLogFiles } from './server-log-files'
@@ -67,6 +73,14 @@ const logSettingsSchema = z.object({
   log_setting: z.object({
     user_export_enabled: z.boolean(),
     max_range_days: z.number().int().min(1),
+    client_rules: z
+      .array(
+        z.object({ key: z.string(), name: z.string(), keywords: z.string() })
+      )
+      .superRefine((rules, ctx) => {
+        const message = validateClientRules(rules)
+        if (message) ctx.addIssue({ code: 'custom', message })
+      }),
   }),
   system_task_setting: z.object({
     retention_days: z.number().int().min(1),
@@ -83,6 +97,7 @@ type LogSettingsSectionProps = {
     LogExportFileRetentionHours: number
     'log_setting.user_export_enabled': boolean
     'log_setting.max_range_days': number
+    'log_setting.client_rules': string
     'system_task_setting.retention_days': number
   }
 }
@@ -91,6 +106,7 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const recordingTitleId = useId()
+  const clientTitleId = useId()
   const searchTitleId = useId()
   const taskHistoryTitleId = useId()
   const formDefaults = useMemo<LogSettingsFormValues>(
@@ -104,6 +120,9 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
         user_export_enabled:
           props.defaultValues['log_setting.user_export_enabled'],
         max_range_days: props.defaultValues['log_setting.max_range_days'],
+        client_rules: parseClientRules(
+          props.defaultValues['log_setting.client_rules']
+        ),
       },
       system_task_setting: {
         retention_days:
@@ -125,6 +144,10 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
   useResetForm(form, isSaving ? undefined : formDefaults)
 
   const onSubmit = async (values: LogSettingsFormValues) => {
+    const clientRules = serializeClientRules(values.log_setting.client_rules)
+    const defaultClientRules = serializeClientRules(
+      parseClientRules(props.defaultValues['log_setting.client_rules'])
+    )
     const changes = [
       ['LogConsumeEnabled', values.LogConsumeEnabled],
       ['AuditLogEnabled', values.AuditLogEnabled],
@@ -135,13 +158,18 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
         values.log_setting.user_export_enabled,
       ],
       ['log_setting.max_range_days', values.log_setting.max_range_days],
+      ['log_setting.client_rules', clientRules],
       [
         'system_task_setting.retention_days',
         values.system_task_setting.retention_days,
       ],
     ] as const
     for (const [key, value] of changes) {
-      if (value === props.defaultValues[key]) continue
+      const current =
+        key === 'log_setting.client_rules'
+          ? defaultClientRules
+          : props.defaultValues[key]
+      if (value === current) continue
       try {
         await updateOption.mutateAsync({ key, value })
       } catch {
@@ -266,6 +294,43 @@ export function LogSettingsSection(props: LogSettingsSectionProps) {
                   </FormControl>
                   <FormMessage />
                 </SettingsSwitchItem>
+              )}
+            />
+          </div>
+
+          <Separator />
+
+          <div
+            role='group'
+            aria-labelledby={clientTitleId}
+            className='flex min-w-0 flex-col gap-4'
+          >
+            <div className='space-y-1'>
+              <h4 id={clientTitleId} className='font-medium'>
+                {t('Request client detection')}
+              </h4>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'The client column in usage logs is detected from the request User-Agent. Add keywords here to group a custom or private client; custom rules are checked before the built-in library.'
+                )}
+              </p>
+            </div>
+            <FormField
+              control={form.control}
+              name='log_setting.client_rules'
+              render={({ field, fieldState }) => (
+                <FormItem>
+                  <ClientRulesEditor
+                    value={field.value}
+                    onChange={field.onChange}
+                    disabled={isSaving}
+                  />
+                  {fieldState.error?.message && (
+                    <p className='text-destructive text-xs' role='alert'>
+                      {fieldState.error.message}
+                    </p>
+                  )}
+                </FormItem>
               )}
             />
           </div>

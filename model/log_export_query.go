@@ -13,7 +13,7 @@ import (
 )
 
 func buildLogExportQuery(filters LogExportFilters, userId int, isAdmin bool) (*gorm.DB, error) {
-	filter := LogFilter{Type: filters.LogType, ModelName: filters.ModelName, TokenName: filters.TokenName,
+	filter := LogFilter{Type: filters.LogType, ModelName: filters.ModelName, Client: filters.Client, TokenName: filters.TokenName,
 		StartTimestamp: filters.StartTimestamp, EndTimestamp: filters.EndTimestamp, Group: filters.Group,
 		RequestId: filters.RequestId, UpstreamRequestId: filters.UpstreamRequestId}
 	tx := LOG_DB.Model(&Log{})
@@ -114,6 +114,8 @@ func getLogExportValue(log *Log, column string) string {
 			return log.ModelName + " -> " + upstreamModel
 		}
 		return log.ModelName
+	case "client":
+		return log.Client
 	case "use_time":
 		if log.Type != LogTypeConsume && log.Type != LogTypeError {
 			return ""

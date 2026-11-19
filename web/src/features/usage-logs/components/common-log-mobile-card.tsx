@@ -39,6 +39,7 @@ import {
   isDisplayableLogType,
   isTimingLogType,
 } from '../lib/utils'
+import { ClientBadge } from './client-badge'
 import { MaskedLogContent } from './masked-log-content'
 import { ModelBadge, ResponseModelDetails } from './model-badge'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
@@ -46,6 +47,7 @@ import { useUsageLogsContext } from './usage-logs-provider'
 
 type FieldName =
   | 'model'
+  | 'client'
   | 'cost'
   | 'user'
   | 'channel'
@@ -86,6 +88,12 @@ export function CommonLogMobileCard<TData>(props: {
       value: model.name,
       visible: displayable && props.cells.has('model_name') && !!model.name,
       masked: props.maskedColumns?.has('model_name'),
+    },
+    client: {
+      label: t('Client'),
+      value: log.client || '',
+      visible: displayable && props.cells.has('client') && !!log.client,
+      masked: props.maskedColumns?.has('client'),
     },
     cost: {
       label: t('Cost'),
@@ -135,7 +143,7 @@ export function CommonLogMobileCard<TData>(props: {
     (!selected.sensitive || context.sensitiveVisible)
       ? selected
       : undefined
-  const metadata: FieldName[] = ['user', 'channel', 'token', 'group']
+  const metadata: FieldName[] = ['client', 'user', 'channel', 'token', 'group']
   const visibleMetadata = metadata.filter((id) => fields[id].visible)
   const costCell = props.cells.get('quota')
   const contentCell = props.cells.get('content')
@@ -258,6 +266,14 @@ export function CommonLogMobileCard<TData>(props: {
                   group={field.value}
                   type='text'
                   className='max-w-full text-sm'
+                />
+              )
+            } else if (id === 'client') {
+              fieldContent = (
+                <ClientBadge
+                  name={field.value}
+                  icon={other?.client_icon}
+                  className='max-w-full'
                 />
               )
             } else if (id === 'token') {

@@ -1031,8 +1031,8 @@ export function request(ctx, req) { return {action: "continue", effects: [{ctx, 
 	require.NoError(t, err)
 	assert.JSONEq(t, `[{"fetch":"function",
 		"ctx":{"stage":"request","format":"openai","path":"/v1/chat/completions","model":"gpt","upstreamModel":"gpt-up","group":"vip",
-			"channel":{"id":7,"type":1},"attempt":1,"user":{"id":5,"username":"alice"},"token":{"id":9,"name":"ci"},
-			"instance":{"id":"rp_1","name":"Limit"},"config":{"limit":3}},
+			"channel":{"id":7,"type":1},"attempt":1,"stream":false,"user":{"id":5,"username":"alice"},"token":{"id":9,"name":"ci"},
+			"instance":{"id":"rp_1","name":"Limit"},"config":{"limit":3},"shared":{}},
 		"req":{"body":{"messages":[{"role":"user","content":"[media:0]"}]},
 			"media":[{"index":0,"path":"/messages/0/content","mimeType":"image/png","bytes":10}],
 			"summary":{"messageCount":1,"toolCount":0,"lastUserTextLength":0,"totalTextLength":0,"hasImages":true,"reasoningEffort":""}}}]`, string(result.Effects))
@@ -1098,7 +1098,7 @@ func TestCallReplyPassesContextAndOutputs(t *testing.T) {
 	thrown := transformErr.Thrown[strings.Index(transformErr.Thrown, "{"):]
 	assert.JSONEq(t, `{"fetch":"function",
 		"ctx":{"stage":"reply","format":"claude","path":"/v1/messages","model":"claude","upstreamModel":"claude-up","group":"vip",
-			"channel":{"id":7,"type":14},"attempt":1,"user":{"id":1,"username":"admin"},"instance":{"id":"rp_1","name":"Mask"},"config":{}},
+			"channel":{"id":7,"type":14},"attempt":1,"stream":false,"user":{"id":1,"username":"admin"},"instance":{"id":"rp_1","name":"Mask"},"config":{},"shared":{}},
 		"res":{"stream":true,"outputs":[{"index":0,"text":"héllo 😀","offset":12,"final":true}]}}`, thrown)
 }
 

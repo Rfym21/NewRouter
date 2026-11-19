@@ -125,19 +125,6 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	}
 	req.Set("anthropic-version", anthropicVersion)
 	CommonClaudeHeadersOperation(c, req, info)
-	if info.ChannelOtherSettings.ClaudeCodeSimulationEnabled {
-		resolvedHeaders, err := channel.ResolveHeaderOverride(info, c, *req)
-		if err != nil {
-			return err
-		}
-		// Resolve identity passthrough before simulation so defaults cannot mask an allowed client value.
-		for name, value := range resolvedHeaders {
-			if isClaudeCodeIdentityHeader(name) {
-				req.Set(name, value)
-			}
-		}
-		ApplyClaudeCodeSimulationHeaders(req, info.ApiKey, info.ChannelOtherSettings.ClaudeCodeSimulation)
-	}
 	return nil
 }
 
@@ -179,14 +166,10 @@ func ShouldApplyClaudeRequestBodySettings(info *relaycommon.RelayInfo) bool {
 		return false
 	}
 	settings := info.ChannelOtherSettings
-	return settings.ForceCacheEnabled ||
-		settings.ForceCache1hEnabled ||
-		settings.ClaudeCodeSimulationEnabled
+	return settings.ForceCacheEnabled || settings.ForceCache1hEnabled
 }
 
 // ApplyClaudeRequestBodySettings applies channel-level Claude request body rewrites.
-// Injection order matters: force-cache injects with its own TTL first, Claude Code simulation
-// runs next, and the blanket 1h rewrite applies last so every cache_control ends at ttl=1h.
 func ApplyClaudeRequestBodySettings(c *gin.Context, info *relaycommon.RelayInfo, bodyBytes []byte) ([]byte, error) {
 	if info == nil {
 		return bodyBytes, nil
@@ -199,14 +182,6 @@ func ApplyClaudeRequestBodySettings(c *gin.Context, info *relaycommon.RelayInfo,
 		if injected {
 			common.SetContextKey(c, constant.ContextKeyClaudeForceCacheInjected, true)
 		}
-	}
-
-	if settings.ClaudeCodeSimulationEnabled {
-		newBody, err := ApplyClaudeCodeSimulationBody(bodyBytes, settings.ClaudeCodeSimulation)
-		if err != nil {
-			return nil, fmt.Errorf("apply claude code simulation failed: %w", err)
-		}
-		bodyBytes = newBody
 	}
 
 	if settings.ForceCache1hEnabled {

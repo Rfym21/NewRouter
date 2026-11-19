@@ -136,6 +136,14 @@ type TransformInstance struct {
 	Name string `json:"name"`
 }
 
+// TransformClient is the incoming client's own fingerprint: the kind the host
+// recognized and the identity headers it may read. Headers holds a whitelist,
+// never credentials.
+type TransformClient struct {
+	Kind    string            `json:"kind,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
 // TransformUser is the user a request comes from.
 type TransformUser struct {
 	ID       int    `json:"id"`
@@ -159,11 +167,18 @@ type TransformContext struct {
 	Group         string            `json:"group"`
 	Channel       *TransformChannel `json:"channel,omitempty"`
 	Attempt       int               `json:"attempt"`
+	Stream        bool              `json:"stream"`
 	User          TransformUser     `json:"user"`
 	// Token is nil when the request has none.
 	Token    *TransformToken   `json:"token,omitempty"`
 	Instance TransformInstance `json:"instance"`
 	Config   json.RawMessage   `json:"config"`
+	// SharedConfig is the plugin-level config every instance of the plugin
+	// reads, with the schema defaults applied (SharedConfigFor).
+	SharedConfig json.RawMessage `json:"shared"`
+	// Client is the incoming client's own fingerprint; nil when the host
+	// could not read one.
+	Client *TransformClient `json:"client,omitempty"`
 	// Media gives the hook's utils the request's attachments; nil when the
 	// stage offers none.
 	Media MediaSource `json:"-"`
@@ -357,6 +372,10 @@ func (p *LoadedPlugin) transformHookContext(tctx *TransformContext) map[string]a
 	if len(config) == 0 {
 		config = json.RawMessage("{}")
 	}
+	shared := tctx.SharedConfig
+	if len(shared) == 0 {
+		shared = json.RawMessage("{}")
+	}
 	hookCtx := map[string]any{
 		"stage":    tctx.Stage,
 		"format":   tctx.Format,
@@ -364,9 +383,11 @@ func (p *LoadedPlugin) transformHookContext(tctx *TransformContext) map[string]a
 		"model":    tctx.Model,
 		"group":    tctx.Group,
 		"attempt":  tctx.Attempt,
+		"stream":   tctx.Stream,
 		"user":     map[string]any{"id": tctx.User.ID, "username": tctx.User.Username},
 		"instance": map[string]any{"id": tctx.Instance.ID, "name": tctx.Instance.Name},
 		"config":   RawJSON(config),
+		"shared":   RawJSON(shared),
 	}
 	if tctx.Token != nil {
 		hookCtx["token"] = map[string]any{"id": tctx.Token.ID, "name": tctx.Token.Name}
@@ -376,6 +397,13 @@ func (p *LoadedPlugin) transformHookContext(tctx *TransformContext) map[string]a
 	}
 	if tctx.Channel != nil {
 		hookCtx["channel"] = map[string]any{"id": tctx.Channel.ID, "type": tctx.Channel.Type}
+	}
+	if tctx.Client != nil {
+		client := map[string]any{"kind": tctx.Client.Kind}
+		if len(tctx.Client.Headers) > 0 {
+			client["headers"] = tctx.Client.Headers
+		}
+		hookCtx["client"] = client
 	}
 	return hookCtx
 }

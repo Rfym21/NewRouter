@@ -115,6 +115,9 @@ type Meta struct {
 	Relay []dto.AdvancedCustomRoute `json:"relay,omitempty"`
 	// ConfigSchema is the schema of a request processing instance's config.
 	ConfigSchema *ConfigSchema `json:"configSchema,omitempty"`
+	// SharedConfigSchema is the schema of the config a request processing
+	// plugin shares with every instance of it. Hooks read it as ctx.shared.
+	SharedConfigSchema *ConfigSchema `json:"sharedConfigSchema,omitempty"`
 	// ChannelConfig is the schema of the plugin config of a type-61 channel
 	// bound to the plugin, stored in its settings as plugin_config.
 	ChannelConfig *ConfigSchema `json:"channelConfig,omitempty"`
@@ -514,11 +517,11 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	value, members, err := engine.exportWithMemberJSON(context.Background(), "meta", "configSchema", "samples", "channelConfig")
+	value, members, err := engine.exportWithMemberJSON(context.Background(), "meta", "configSchema", "samples", "channelConfig", "sharedConfigSchema")
 	if err != nil {
 		return nil, err
 	}
-	configSchema, samples, channelConfig := members[0], members[1], members[2]
+	configSchema, samples, channelConfig, sharedConfigSchema := members[0], members[1], members[2], members[3]
 	meta, err := decodeMeta(value)
 	if err != nil {
 		return nil, err
@@ -541,6 +544,14 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 			return nil, fmt.Errorf("plugin %s meta configSchema belongs to the request processing part; export ingress, request, outbound, egress, reply or report, or remove it", meta.Key)
 		}
 		if meta.ConfigSchema, err = decodeConfigSchema(configSchema); err != nil {
+			return nil, err
+		}
+	}
+	if sharedConfigSchema != nil {
+		if !meta.HasTransformPart() {
+			return nil, fmt.Errorf("plugin %s meta sharedConfigSchema belongs to the request processing part; export ingress, request, outbound, egress, reply or report, or remove it", meta.Key)
+		}
+		if meta.SharedConfigSchema, err = decodeConfigSchema(sharedConfigSchema); err != nil {
 			return nil, err
 		}
 	}
@@ -1380,7 +1391,7 @@ func decodeMeta(value any) (Meta, error) {
 	}
 	for field := range object {
 		switch field {
-		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "models", "fetchMode", "allowedHosts", "upstreams", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions", "relay", "configSchema", "optional", "scope", "samples", "channelConfig", "keyHint":
+		case "requiredCapabilities", "submitResponseTypes", "sortPriority", "website", "apiVersion", "key", "name", "icon", "description", "version", "author", "baseUrl", "channelTypes", "channelType", "compatibleChannelTypes", "models", "fetchMode", "allowedHosts", "upstreams", "routes", "protocols", "usageSchema", "usageExamples", "usageProfiles", "auth", "endpoints", "submitPaths", "actions", "relay", "configSchema", "sharedConfigSchema", "optional", "scope", "samples", "channelConfig", "keyHint":
 		default:
 			return Meta{}, &UnknownMetaFieldError{Field: field}
 		}

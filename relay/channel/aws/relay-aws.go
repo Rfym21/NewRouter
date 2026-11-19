@@ -117,6 +117,9 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 	// init empty request.header
 	requestHeader := http.Header{}
 	a.SetupRequestHeader(c, &requestHeader, info)
+	if err := channel.ApplyRequestPluginHeaders(info, requestHeader); err != nil {
+		return nil, err
+	}
 	headerOverride, err := channel.ResolveHeaderOverride(info, c, requestHeader)
 	if err != nil {
 		return nil, err

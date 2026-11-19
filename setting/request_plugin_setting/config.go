@@ -12,6 +12,9 @@ import (
 // InstancesOption is the option key of the instance list.
 const InstancesOption = "request_plugin_setting.instances"
 
+// SharedConfigsOption is the option key of the plugin shared configs.
+const SharedConfigsOption = "request_plugin_setting.shared_configs"
+
 // Instance is one configured use of a request plugin. Global instances run
 // on every request, group instances on the requests of their groups, and a
 // channel runs the instances its request_plugins setting lists. Models
@@ -77,11 +80,30 @@ func (list *Instances) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type RequestPluginSetting struct {
-	Instances Instances `json:"instances"`
+// SharedConfigs is the config one plugin shares with every instance of it,
+// stored by plugin key. An instance reads it as ctx.shared; the instance
+// config can override what it needs.
+type SharedConfigs map[string]json.RawMessage
+
+var sharedConfigsMu sync.RWMutex
+
+func (configs *SharedConfigs) UnmarshalJSON(data []byte) error {
+	var decoded map[string]json.RawMessage
+	if err := common.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	sharedConfigsMu.Lock()
+	*configs = decoded
+	sharedConfigsMu.Unlock()
+	return nil
 }
 
-var requestPluginSetting = RequestPluginSetting{Instances: Instances{}}
+type RequestPluginSetting struct {
+	Instances     Instances     `json:"instances"`
+	SharedConfigs SharedConfigs `json:"shared_configs"`
+}
+
+var requestPluginSetting = RequestPluginSetting{Instances: Instances{}, SharedConfigs: SharedConfigs{}}
 
 func init() {
 	config.GlobalConfig.Register("request_plugin_setting", &requestPluginSetting)
@@ -93,6 +115,25 @@ func GetInstances() []Instance {
 	instancesMu.RLock()
 	defer instancesMu.RUnlock()
 	return requestPluginSetting.Instances
+}
+
+// GetSharedConfig returns the stored shared config of plugin, nil when it has
+// none. The caller may change the result.
+func GetSharedConfig(plugin string) json.RawMessage {
+	sharedConfigsMu.RLock()
+	defer sharedConfigsMu.RUnlock()
+	return slices.Clone(requestPluginSetting.SharedConfigs[plugin])
+}
+
+// GetSharedConfigs returns the shared configs in a copy the caller may change.
+func GetSharedConfigs() map[string]json.RawMessage {
+	sharedConfigsMu.RLock()
+	defer sharedConfigsMu.RUnlock()
+	configs := make(map[string]json.RawMessage, len(requestPluginSetting.SharedConfigs))
+	for key, value := range requestPluginSetting.SharedConfigs {
+		configs[key] = slices.Clone(value)
+	}
+	return configs
 }
 
 // Covers reports whether the scope holds a request for model, whose name

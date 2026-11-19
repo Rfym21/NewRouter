@@ -402,8 +402,8 @@ func TestTaskReport(t *testing.T) {
 
 	sent := gjson.Parse(receive(t, received).Body)
 	assert.JSONEq(t, `{"stage":"report","format":"task","path":"/v1/video/generations","model":"video","upstreamModel":"video-up","group":"default",
-		"channel":{"id":7,"type":1},"attempt":0,"user":{"id":5,"username":"alice"},"token":{"id":9,"name":"ci"},
-		"instance":{"id":"sink","name":"Sink"},"config":{"url":"`+server.URL+`/report","target":"`+server.URL+`/ingress"}}`, sent.Get("ctx").Raw)
+		"channel":{"id":7,"type":1},"attempt":0,"stream":false,"user":{"id":5,"username":"alice"},"token":{"id":9,"name":"ci"},
+		"instance":{"id":"sink","name":"Sink"},"config":{"url":"`+server.URL+`/report","target":"`+server.URL+`/ingress"},"shared":{}}`, sent.Get("ctx").Raw)
 	got := sent.Get("record")
 	assert.Equal(t, "req-1", got.Get("requestId").Str)
 	assert.Equal(t, started.UnixMilli(), got.Get("startedAt").Int())

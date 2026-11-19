@@ -291,6 +291,8 @@ func SetApiRouter(router *gin.Engine) {
 		requestPluginRoute.Use(middleware.RootAuth())
 		{
 			requestPluginRoute.PUT("/instances", controller.UpdateRequestPluginInstances)
+			requestPluginRoute.GET("/shared_configs", controller.GetRequestPluginSharedConfigs)
+			requestPluginRoute.PUT("/shared_configs", controller.UpdateRequestPluginSharedConfigs)
 			requestPluginRoute.POST("/dry_run", controller.DryRunRequestPlugins)
 		}
 		registerChannelRoutes(apiRouter)

@@ -25,9 +25,14 @@ func TestLegacyTaskProviderChannelAndModelRouting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
-			plugin, ok := jsplugin.DefaultRegistry.Generation().GetByChannelType(tc.channel)
-			require.True(t, ok)
-			require.Equal(t, tc.key, plugin.Meta.Key)
+			var plugin *jsplugin.LoadedPlugin
+			for _, candidate := range jsplugin.DefaultRegistry.Generation().PluginsByChannelType(tc.channel) {
+				if candidate.Meta.Key == tc.key {
+					plugin = candidate
+					break
+				}
+			}
+			require.NotNil(t, plugin)
 			for _, model := range tc.models {
 				require.Contains(t, plugin.Meta.Models, model)
 			}

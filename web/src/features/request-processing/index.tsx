@@ -17,7 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, Pencil, Play, Plus, Trash2 } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  Pencil,
+  Play,
+  Plus,
+  Settings2,
+  Trash2,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -40,19 +48,23 @@ import {
 import { getEnabledModels, getGroups } from '@/features/channels/api'
 import { NodeSyncIndicator } from '@/features/system-info/components/node-sync-indicator'
 import {
+  getRequestPluginSharedConfigs,
   listRequestPluginInstances,
   listRequestPluginOptions,
   saveRequestPluginInstances,
+  saveRequestPluginSharedConfigs,
 } from '@/features/task-plugins/api'
 import { PluginIcon } from '@/features/task-plugins/components/plugin-icon'
 import { PluginScopeSummary } from '@/features/task-plugins/components/plugin-scope-summary'
 import { RequestPluginDryRunDialog } from '@/features/task-plugins/components/request-plugin-dry-run-dialog'
 import { RequestPluginInstanceEditor } from '@/features/task-plugins/components/request-plugin-instance-editor'
+import { RequestPluginSharedConfigDialog } from '@/features/task-plugins/components/request-plugin-shared-config-dialog'
 import { localizedPluginName } from '@/features/task-plugins/lib/plugin-name'
 import { pluginScopeNeedsReview } from '@/features/task-plugins/lib/plugin-scope'
 import {
   REQUEST_PLUGIN_INSTANCES_QUERY_KEY,
   REQUEST_PLUGIN_OPTIONS_QUERY_KEY,
+  REQUEST_PLUGIN_SHARED_CONFIGS_QUERY_KEY,
 } from '@/features/task-plugins/lib/request-plugins'
 import type { RequestPluginInstance } from '@/features/task-plugins/types'
 import {
@@ -73,6 +85,7 @@ export function RequestProcessing() {
   const [deleteTarget, setDeleteTarget] =
     useState<RequestPluginInstance | null>(null)
   const [dryRunOpen, setDryRunOpen] = useState(false)
+  const [sharedOpen, setSharedOpen] = useState(false)
   const instancesQuery = useQuery({
     queryKey: REQUEST_PLUGIN_INSTANCES_QUERY_KEY,
     queryFn: listRequestPluginInstances,
@@ -81,6 +94,11 @@ export function RequestProcessing() {
   const pluginsQuery = useQuery({
     queryKey: REQUEST_PLUGIN_OPTIONS_QUERY_KEY,
     queryFn: listRequestPluginOptions,
+  })
+  const sharedConfigsQuery = useQuery({
+    queryKey: REQUEST_PLUGIN_SHARED_CONFIGS_QUERY_KEY,
+    queryFn: getRequestPluginSharedConfigs,
+    meta: { errorToast: false },
   })
   const groupsQuery = useQuery({
     queryKey: ['groups'],
@@ -107,19 +125,36 @@ export function RequestProcessing() {
       setEditing(null)
     },
   })
+  const sharedMutation = useMutation({
+    mutationFn: saveRequestPluginSharedConfigs,
+    meta: { errorToast: false },
+    onSuccess: (sharedConfigs) => {
+      queryClient.setQueryData(
+        REQUEST_PLUGIN_SHARED_CONFIGS_QUERY_KEY,
+        sharedConfigs
+      )
+      setSharedOpen(false)
+    },
+  })
   const instances = instancesQuery.data ?? []
   // Host-managed instances are rebuilt by the server and have no editor
   // controls; they stay out of the list but are saved back untouched.
   const managedInstances = instances.filter((item) => item.managed_by)
   const visibleInstances = instances.filter((item) => !item.managed_by)
   const plugins = pluginsQuery.data ?? []
+  const sharedConfigPlugins = plugins.filter(
+    (plugin) => plugin.sharedConfigSchema
+  )
   const instanceCounts: Record<string, number> = {}
   for (const instance of instances) {
     instanceCounts[instance.plugin] = (instanceCounts[instance.plugin] ?? 0) + 1
   }
   const groups = groupsQuery.data?.data ?? []
   const models = modelsQuery.data?.data ?? []
-  const busy = listMutation.isPending || editorMutation.isPending
+  const busy =
+    listMutation.isPending ||
+    editorMutation.isPending ||
+    sharedMutation.isPending
 
   const move = (index: number, offset: -1 | 1) => {
     const next = [...visibleInstances]
@@ -320,6 +355,16 @@ export function RequestProcessing() {
         </SectionPageLayout.Title>
         <SectionPageLayout.Actions>
           <NodeSyncIndicator topics={['options']} />
+          {sharedConfigPlugins.length > 0 && (
+            <Button
+              variant='outline'
+              disabled={!sharedConfigsQuery.isSuccess || busy}
+              onClick={() => setSharedOpen(true)}
+            >
+              <Settings2 aria-hidden='true' />
+              {t('Shared settings')}
+            </Button>
+          )}
           <Button
             variant='outline'
             disabled={!instancesQuery.isSuccess}
@@ -386,6 +431,24 @@ export function RequestProcessing() {
         instances={instances}
         plugins={plugins}
         groups={groups}
+      />
+      <RequestPluginSharedConfigDialog
+        open={sharedOpen}
+        plugins={sharedConfigPlugins}
+        sharedConfigs={sharedConfigsQuery.data ?? {}}
+        saving={sharedMutation.isPending}
+        error={
+          sharedMutation.isError
+            ? getServerErrorMessage(sharedMutation.error)
+            : undefined
+        }
+        onOpenChange={setSharedOpen}
+        onSave={(plugin, config) =>
+          sharedMutation.mutate({
+            ...sharedConfigsQuery.data,
+            [plugin]: config,
+          })
+        }
       />
       <ConfirmDialog
         open={Boolean(deleteTarget)}

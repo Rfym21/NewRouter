@@ -30,10 +30,6 @@ import {
   FIELD_PASSTHROUGH_TYPES,
   MODEL_FETCHABLE_TYPES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
-  claudeSimulationShowsHeaders,
-  codexSimulationShowsHeaders,
-  supportsClaudeSimulation,
-  supportsCodexSimulation,
 } from '../constants'
 import type { Channel, ChannelSettings } from '../types'
 import {
@@ -46,22 +42,6 @@ import {
 } from './advanced-custom'
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
 import {
-  CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS,
-  CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS_JSON,
-  CLAUDE_CODE_SIMULATION_DEFAULT_METADATA,
-  CLAUDE_CODE_SIMULATION_DEFAULT_METADATA_JSON,
-  CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM,
-  CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON,
-} from './claude-code-simulation'
-import {
-  CODEX_SIMULATION_DEFAULT_HEADERS,
-  CODEX_SIMULATION_DEFAULT_HEADERS_JSON,
-  CODEX_SIMULATION_DEFAULT_METADATA,
-  CODEX_SIMULATION_DEFAULT_METADATA_JSON,
-  CODEX_SIMULATION_DEFAULT_SYSTEM,
-  CODEX_SIMULATION_DEFAULT_SYSTEM_JSON,
-} from './codex-simulation'
-import {
   fieldPassThroughRulesSchema,
   formatFieldPassThroughRules,
   isFieldPassThroughRulesText,
@@ -73,17 +53,6 @@ import { supportsResponsesWebSocket } from './responses-websocket'
 // ============================================================================
 // Form Validation Schema
 // ============================================================================
-
-const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
-
-function isValidHttpHeaderValue(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)
-    if (codePoint === undefined) return false
-    if ((codePoint <= 31 && codePoint !== 9) || codePoint === 127) return false
-  }
-  return true
-}
 
 const SUPPORTED_PROXY_PROTOCOLS = new Set([
   'http:',
@@ -163,104 +132,6 @@ function isOptionalJsonObject(value: string | undefined): boolean {
     return parsed === undefined || isJsonObjectValue(parsed)
   } catch {
     return false
-  }
-}
-
-function isClaudeCodeSimulationHeaders(value: string): boolean {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!isJsonObjectValue(parsed)) return false
-
-    const normalizedNames = new Set<string>()
-    for (const [name, headerValue] of Object.entries(parsed)) {
-      const normalizedName = name.toLowerCase()
-      if (
-        !HTTP_HEADER_NAME_PATTERN.test(name) ||
-        normalizedNames.has(normalizedName) ||
-        typeof headerValue !== 'string' ||
-        !isValidHttpHeaderValue(headerValue)
-      ) {
-        return false
-      }
-      normalizedNames.add(normalizedName)
-    }
-    return true
-  } catch {
-    return false
-  }
-}
-
-function isClaudeCodeSimulationMetadata(value: string): boolean {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!isJsonObjectValue(parsed)) return false
-
-    return (
-      Object.values(parsed).every((item) => typeof item === 'string') &&
-      typeof parsed.device_id === 'string' &&
-      parsed.device_id.trim().length > 0 &&
-      typeof parsed.account_uuid === 'string' &&
-      typeof parsed.session_id === 'string' &&
-      parsed.session_id.trim().length > 0
-    )
-  } catch {
-    return false
-  }
-}
-
-function isClaudeCodeSimulationSystem(value: string): boolean {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return (
-      Array.isArray(parsed) &&
-      parsed.every(
-        (item) => isJsonObjectValue(item) && Object.keys(item).length > 0
-      )
-    )
-  } catch {
-    return false
-  }
-}
-
-function isCodexSimulationMetadata(value: string): boolean {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!isJsonObjectValue(parsed)) return false
-    const identityKeys = new Set([
-      'installation_id',
-      'session_id',
-      'thread_id',
-      'turn_id',
-      'window_id',
-    ])
-    return Object.entries(parsed).every(([key, item]) => {
-      if (
-        typeof item !== 'string' &&
-        typeof item !== 'number' &&
-        typeof item !== 'boolean'
-      ) {
-        return false
-      }
-      if (identityKeys.has(key) && typeof item !== 'string') {
-        return false
-      }
-      return key !== 'session_id' || (typeof item === 'string' && !!item.trim())
-    })
-  } catch {
-    return false
-  }
-}
-
-function stringifyJsonValue(value: unknown, fallback: string): string {
-  if (value === undefined || value === null) return fallback
-  return JSON.stringify(value, null, 2) ?? fallback
-}
-
-function parseJsonOrFallback(value: string, fallback: unknown): unknown {
-  try {
-    return JSON.parse(value) as unknown
-  } catch {
-    return fallback
   }
 }
 
@@ -472,14 +343,6 @@ export const channelFormSchema = z
     cache_read_min_ratio_enabled: z.boolean().optional(),
     cache_read_min_ratio_percent: z.number().min(0).max(100).optional(),
     thinking_signature_rectifier_enabled: z.boolean().optional(),
-    claude_code_simulation_enabled: z.boolean().optional(),
-    claude_code_simulation_headers: z.string(),
-    claude_code_simulation_metadata: z.string(),
-    claude_code_simulation_system: z.string(),
-    codex_simulation_enabled: z.boolean().optional(),
-    codex_simulation_headers: z.string(),
-    codex_simulation_metadata: z.string(),
-    codex_simulation_system: z.string(),
     // OpenAI/Azure Responses rectifier (stored in settings JSON)
     responses_encrypted_content_rectifier_enabled: z.boolean().optional(),
     // Unify request/response model name (stored in setting JSON, all upstreams)
@@ -499,68 +362,6 @@ export const channelFormSchema = z
       .optional(),
   })
   .superRefine((data, ctx) => {
-    if (
-      supportsClaudeSimulation(data.type) &&
-      data.claude_code_simulation_enabled === true
-    ) {
-      if (
-        claudeSimulationShowsHeaders(data.type) &&
-        !isClaudeCodeSimulationHeaders(data.claude_code_simulation_headers)
-      ) {
-        addRequiredIssue(
-          ctx,
-          'claude_code_simulation_headers',
-          'Claude Code simulation headers must be a JSON object with string values'
-        )
-      }
-      if (
-        !isClaudeCodeSimulationMetadata(data.claude_code_simulation_metadata)
-      ) {
-        addRequiredIssue(
-          ctx,
-          'claude_code_simulation_metadata',
-          'Claude Code simulation metadata must contain device_id, account_uuid, and session_id strings'
-        )
-      }
-      if (!isClaudeCodeSimulationSystem(data.claude_code_simulation_system)) {
-        addRequiredIssue(
-          ctx,
-          'claude_code_simulation_system',
-          'Claude Code simulation system prompt must be a JSON array'
-        )
-      }
-    }
-
-    if (
-      supportsCodexSimulation(data.type) &&
-      data.codex_simulation_enabled === true
-    ) {
-      if (
-        codexSimulationShowsHeaders(data.type) &&
-        !isClaudeCodeSimulationHeaders(data.codex_simulation_headers)
-      ) {
-        addRequiredIssue(
-          ctx,
-          'codex_simulation_headers',
-          'Codex simulation headers must be a JSON object with string values'
-        )
-      }
-      if (!isCodexSimulationMetadata(data.codex_simulation_metadata)) {
-        addRequiredIssue(
-          ctx,
-          'codex_simulation_metadata',
-          'Codex simulation metadata must contain a non-empty session_id string when present'
-        )
-      }
-      if (!isClaudeCodeSimulationSystem(data.codex_simulation_system)) {
-        addRequiredIssue(
-          ctx,
-          'codex_simulation_system',
-          'Codex simulation system prompt must be a JSON array'
-        )
-      }
-    }
-
     if (
       [
         3,
@@ -768,14 +569,6 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   cache_read_min_ratio_enabled: false,
   cache_read_min_ratio_percent: 95,
   thinking_signature_rectifier_enabled: false,
-  claude_code_simulation_enabled: false,
-  claude_code_simulation_headers: CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS_JSON,
-  claude_code_simulation_metadata: CLAUDE_CODE_SIMULATION_DEFAULT_METADATA_JSON,
-  claude_code_simulation_system: CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON,
-  codex_simulation_enabled: false,
-  codex_simulation_headers: CODEX_SIMULATION_DEFAULT_HEADERS_JSON,
-  codex_simulation_metadata: CODEX_SIMULATION_DEFAULT_METADATA_JSON,
-  codex_simulation_system: CODEX_SIMULATION_DEFAULT_SYSTEM_JSON,
   responses_encrypted_content_rectifier_enabled: false,
   unify_request_response_model_name_enabled: false,
   ollama_openai_chat: false,
@@ -922,15 +715,6 @@ export function transformChannelToFormDefaults(
   let cacheReadMinRatioEnabled = false
   let cacheReadMinRatioPercent = 95
   let thinkingSignatureRectifierEnabled = false
-  let claudeCodeSimulationEnabled = false
-  let claudeCodeSimulationHeaders = CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS_JSON
-  let claudeCodeSimulationMetadata =
-    CLAUDE_CODE_SIMULATION_DEFAULT_METADATA_JSON
-  let claudeCodeSimulationSystem = CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON
-  let codexSimulationEnabled = false
-  let codexSimulationHeaders = CODEX_SIMULATION_DEFAULT_HEADERS_JSON
-  let codexSimulationMetadata = CODEX_SIMULATION_DEFAULT_METADATA_JSON
-  let codexSimulationSystem = CODEX_SIMULATION_DEFAULT_SYSTEM_JSON
   let responsesEncryptedContentRectifierEnabled = false
   let bodyFieldPassThroughRules: ChannelFormValues['body_field_pass_through_rules'] =
     []
@@ -976,37 +760,6 @@ export function transformChannelToFormDefaults(
       }
       thinkingSignatureRectifierEnabled =
         parsed.thinking_signature_rectifier_enabled === true
-      claudeCodeSimulationEnabled =
-        parsed.claude_code_simulation_enabled === true
-      if (isJsonObjectValue(parsed.claude_code_simulation)) {
-        claudeCodeSimulationHeaders = stringifyJsonValue(
-          parsed.claude_code_simulation.headers,
-          CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS_JSON
-        )
-        claudeCodeSimulationMetadata = stringifyJsonValue(
-          parsed.claude_code_simulation.metadata,
-          CLAUDE_CODE_SIMULATION_DEFAULT_METADATA_JSON
-        )
-        claudeCodeSimulationSystem = stringifyJsonValue(
-          parsed.claude_code_simulation.system,
-          CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM_JSON
-        )
-      }
-      codexSimulationEnabled = parsed.codex_simulation_enabled === true
-      if (isJsonObjectValue(parsed.codex_simulation)) {
-        codexSimulationHeaders = stringifyJsonValue(
-          parsed.codex_simulation.headers,
-          CODEX_SIMULATION_DEFAULT_HEADERS_JSON
-        )
-        codexSimulationMetadata = stringifyJsonValue(
-          parsed.codex_simulation.metadata,
-          CODEX_SIMULATION_DEFAULT_METADATA_JSON
-        )
-        codexSimulationSystem = stringifyJsonValue(
-          parsed.codex_simulation.system,
-          CODEX_SIMULATION_DEFAULT_SYSTEM_JSON
-        )
-      }
       responsesEncryptedContentRectifierEnabled =
         parsed.responses_encrypted_content_rectifier_enabled === true
       bodyFieldPassThroughRules = parseFieldPassThroughRules(
@@ -1095,14 +848,6 @@ export function transformChannelToFormDefaults(
     cache_read_min_ratio_enabled: cacheReadMinRatioEnabled,
     cache_read_min_ratio_percent: cacheReadMinRatioPercent,
     thinking_signature_rectifier_enabled: thinkingSignatureRectifierEnabled,
-    claude_code_simulation_enabled: claudeCodeSimulationEnabled,
-    claude_code_simulation_headers: claudeCodeSimulationHeaders,
-    claude_code_simulation_metadata: claudeCodeSimulationMetadata,
-    claude_code_simulation_system: claudeCodeSimulationSystem,
-    codex_simulation_enabled: codexSimulationEnabled,
-    codex_simulation_headers: codexSimulationHeaders,
-    codex_simulation_metadata: codexSimulationMetadata,
-    codex_simulation_system: codexSimulationSystem,
     responses_encrypted_content_rectifier_enabled:
       responsesEncryptedContentRectifierEnabled,
     ollama_openai_chat: ollamaOpenAIChat,
@@ -1354,96 +1099,6 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.cache_1h_bill_as_5m_enabled
     delete settingsObj.cache_read_min_ratio_enabled
     delete settingsObj.cache_read_min_ratio
-  }
-
-  if (supportsClaudeSimulation(formData.type)) {
-    settingsObj.claude_code_simulation_enabled =
-      formData.claude_code_simulation_enabled === true
-    const claudeCodeSimulationHeaders = parseJsonOrFallback(
-      formData.claude_code_simulation_headers,
-      CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS
-    )
-    const claudeCodeSimulationMetadata = parseJsonOrFallback(
-      formData.claude_code_simulation_metadata,
-      CLAUDE_CODE_SIMULATION_DEFAULT_METADATA
-    )
-    const claudeCodeSimulationSystem = parseJsonOrFallback(
-      formData.claude_code_simulation_system,
-      CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM
-    )
-    const claudeCodeSimulation: Record<string, unknown> = {
-      metadata: claudeCodeSimulationMetadata,
-      system: claudeCodeSimulationSystem,
-    }
-    const hasCustomHeaders =
-      claudeSimulationShowsHeaders(formData.type) &&
-      JSON.stringify(claudeCodeSimulationHeaders) !==
-        JSON.stringify(CLAUDE_CODE_SIMULATION_DEFAULT_HEADERS)
-    if (claudeSimulationShowsHeaders(formData.type)) {
-      claudeCodeSimulation.headers = claudeCodeSimulationHeaders
-    }
-    const hasCustomClaudeCodeSimulation =
-      hasCustomHeaders ||
-      JSON.stringify(claudeCodeSimulationMetadata) !==
-        JSON.stringify(CLAUDE_CODE_SIMULATION_DEFAULT_METADATA) ||
-      JSON.stringify(claudeCodeSimulationSystem) !==
-        JSON.stringify(CLAUDE_CODE_SIMULATION_DEFAULT_SYSTEM)
-    if (
-      formData.claude_code_simulation_enabled === true ||
-      hasCustomClaudeCodeSimulation
-    ) {
-      settingsObj.claude_code_simulation = claudeCodeSimulation
-    } else {
-      delete settingsObj.claude_code_simulation
-    }
-  } else {
-    delete settingsObj.claude_code_simulation_enabled
-    delete settingsObj.claude_code_simulation
-  }
-
-  if (supportsCodexSimulation(formData.type)) {
-    settingsObj.codex_simulation_enabled =
-      formData.codex_simulation_enabled === true
-    const codexSimulationHeaders = parseJsonOrFallback(
-      formData.codex_simulation_headers,
-      CODEX_SIMULATION_DEFAULT_HEADERS
-    )
-    const codexSimulationMetadata = parseJsonOrFallback(
-      formData.codex_simulation_metadata,
-      CODEX_SIMULATION_DEFAULT_METADATA
-    )
-    const codexSimulationSystem = parseJsonOrFallback(
-      formData.codex_simulation_system,
-      CODEX_SIMULATION_DEFAULT_SYSTEM
-    )
-    const codexSimulation: Record<string, unknown> = {
-      metadata: codexSimulationMetadata,
-      system: codexSimulationSystem,
-    }
-    const hasCustomHeaders =
-      codexSimulationShowsHeaders(formData.type) &&
-      JSON.stringify(codexSimulationHeaders) !==
-        JSON.stringify(CODEX_SIMULATION_DEFAULT_HEADERS)
-    if (codexSimulationShowsHeaders(formData.type)) {
-      codexSimulation.headers = codexSimulationHeaders
-    }
-    const hasCustomCodexSimulation =
-      hasCustomHeaders ||
-      JSON.stringify(codexSimulationMetadata) !==
-        JSON.stringify(CODEX_SIMULATION_DEFAULT_METADATA) ||
-      JSON.stringify(codexSimulationSystem) !==
-        JSON.stringify(CODEX_SIMULATION_DEFAULT_SYSTEM)
-    if (
-      formData.codex_simulation_enabled === true ||
-      hasCustomCodexSimulation
-    ) {
-      settingsObj.codex_simulation = codexSimulation
-    } else {
-      delete settingsObj.codex_simulation
-    }
-  } else {
-    delete settingsObj.codex_simulation_enabled
-    delete settingsObj.codex_simulation
   }
 
   // Only the Ollama adaptor can switch chat completions to the OpenAI-compatible endpoint.

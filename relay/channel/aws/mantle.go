@@ -104,12 +104,12 @@ func (a *Adaptor) newMantleRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
 	claude.CommonClaudeHeadersOperation(c, &req.Header, info)
-	if info.ChannelMeta.ChannelOtherSettings.ClaudeCodeSimulationEnabled {
-		claude.ApplyClaudeCodeSimulationBetaHeader(&req.Header)
-	}
 	parts := strings.Split(info.ApiKey, "|")
 	if len(parts) == 2 {
 		req.Header.Set("x-api-key", parts[0])
+	}
+	if err := channel.ApplyRequestPluginHeaders(info, req.Header); err != nil {
+		return nil, err
 	}
 	headerOverride, err := channel.ResolveHeaderOverride(info, c, req.Header)
 	if err != nil {

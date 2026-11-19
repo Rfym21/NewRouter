@@ -22,6 +22,9 @@ import type { RequestPluginConfigField } from '../types'
 
 export const REQUEST_PLUGIN_INSTANCES_QUERY_KEY = ['request-plugin-instances']
 export const REQUEST_PLUGIN_OPTIONS_QUERY_KEY = ['request-plugin-options']
+export const REQUEST_PLUGIN_SHARED_CONFIGS_QUERY_KEY = [
+  'request-plugin-shared-configs',
+]
 
 /** Plain names of the stage hooks, in the order a request meets them. */
 export const REQUEST_PLUGIN_STAGE_LABELS: Record<string, string> = {

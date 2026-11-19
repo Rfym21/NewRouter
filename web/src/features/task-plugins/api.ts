@@ -234,6 +234,28 @@ export async function saveRequestPluginInstances(
   return requireSuccess(response.data).instances ?? []
 }
 
+/** The plugin-level configs every instance of a plugin reads as ctx.shared. */
+export async function getRequestPluginSharedConfigs() {
+  const response = await api.get<
+    ApiResponse<{ shared_configs: Record<string, unknown> | null }>
+  >('/api/request_plugin/shared_configs')
+  return requireSuccess(response.data).shared_configs ?? {}
+}
+
+/** Saves the plugin-level configs given; plugins left out keep theirs. */
+export async function saveRequestPluginSharedConfigs(
+  sharedConfigs: Record<string, unknown>
+) {
+  const response = await api.put<
+    ApiResponse<{ shared_configs: Record<string, unknown> | null }>
+  >(
+    '/api/request_plugin/shared_configs',
+    { shared_configs: sharedConfigs },
+    mutationConfig
+  )
+  return requireSuccess(response.data).shared_configs ?? {}
+}
+
 export async function dryRunRequestPlugins(
   request: RequestPluginDryRunRequest
 ) {

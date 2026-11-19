@@ -86,14 +86,6 @@ const CONFIGURATION_BLOCKS = {
       'cache_read_min_ratio_enabled',
       'cache_read_min_ratio_percent',
       'thinking_signature_rectifier_enabled',
-      'claude_code_simulation_enabled',
-      'claude_code_simulation_headers',
-      'claude_code_simulation_metadata',
-      'claude_code_simulation_system',
-      'codex_simulation_enabled',
-      'codex_simulation_headers',
-      'codex_simulation_metadata',
-      'codex_simulation_system',
       'responses_encrypted_content_rectifier_enabled',
       'unify_request_response_model_name_enabled',
     ],
@@ -219,8 +211,6 @@ export function getChannelConfigurationState(
       values.cache_1h_bill_as_5m_enabled ||
       values.cache_read_min_ratio_enabled ||
       values.thinking_signature_rectifier_enabled ||
-      values.claude_code_simulation_enabled ||
-      values.codex_simulation_enabled ||
       values.responses_encrypted_content_rectifier_enabled ||
       values.unify_request_response_model_name_enabled
     ),

@@ -865,8 +865,8 @@ func TestReportSuccess(t *testing.T) {
 	assert.JSONEq(t, `{"id":"chatcmpl-1","object":"chat.completion"}`, recorder.Body.String())
 	sent := gjson.Parse(request.Body)
 	assert.JSONEq(t, `{"stage":"report","format":"openai","path":"/v1/chat/completions","model":"gpt","upstreamModel":"gpt-up","group":"default",
-		"channel":{"id":7,"type":1},"attempt":0,"user":{"id":5,"username":"alice"},"token":{"id":9,"name":"ci"},
-		"instance":{"id":"sink","name":"Sink"},"config":{"url":"`+server.URL+`/report"}}`, sent.Get("ctx").Raw)
+		"channel":{"id":7,"type":1},"attempt":0,"stream":false,"user":{"id":5,"username":"alice"},"token":{"id":9,"name":"ci"},
+		"instance":{"id":"sink","name":"Sink"},"config":{"url":"`+server.URL+`/report"},"shared":{}}`, sent.Get("ctx").Raw)
 	assert.JSONEq(t, `{
 		"requestId":"req-1","user":{"id":5,"username":"alice"},"token":{"id":9,"name":"ci"},
 		"startedAt":`+strconv.FormatInt(started.UnixMilli(), 10)+`,"durationMs":`+sent.Get("record.durationMs").Raw+`,"firstResponseMs":120,

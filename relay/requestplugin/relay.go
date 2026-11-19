@@ -93,6 +93,7 @@ func (p *Plan) ingress(c *gin.Context, format types.RelayFormat, model string) (
 		ChannelID: channelID,
 		User:      user,
 		Token:     token,
+		Client:    clientFingerprint(c),
 		Body:      read.body,
 		form:      read.form,
 	})
@@ -432,7 +433,9 @@ func attemptCall(c *gin.Context, info *relaycommon.RelayInfo) Call {
 		Model:     info.OriginModelName,
 		Group:     requestGroup(c),
 		Attempt:   info.RetryIndex,
+		Stream:    info.IsStream,
 		ChannelID: info.ChannelId,
+		Client:    clientFingerprint(c),
 	}
 	if plan := planOf(c); plan != nil {
 		// A retry may settle another channel; its scoped instances follow.
@@ -617,6 +620,11 @@ type DryRunInput struct {
 	ModifierEffort string
 	// User runs the dry run; a dry run has no token.
 	User jsplugin.TransformUser
+	// Client is the incoming client fingerprint the hooks read. A dry run
+	// without one runs as a client the host did not recognize.
+	Client *jsplugin.TransformClient
+	// Stream reports whether the request asks for a streaming answer.
+	Stream bool
 	// Reply, when set, is an answer text the reply checks run on, as on a
 	// non-stream answer in Format.
 	Reply *string
@@ -676,7 +684,7 @@ func DryRun(ctx context.Context, input DryRunInput) DryRunResult {
 	if plan == nil {
 		return result
 	}
-	call := Call{Format: input.Format, Path: input.Path, Model: input.Model, UpstreamModel: input.Model, Group: input.Group, User: input.User, Body: input.Body}
+	call := Call{Format: input.Format, Path: input.Path, Model: input.Model, UpstreamModel: input.Model, Group: input.Group, User: input.User, Client: input.Client, Stream: input.Stream, Body: input.Body}
 	stages := append([]struct {
 		stage string
 		late  bool

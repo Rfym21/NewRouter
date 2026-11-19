@@ -105,6 +105,15 @@ func (m Meta) ConfigSchemaJSON() json.RawMessage {
 	return slices.Clone(m.ConfigSchema.text)
 }
 
+// SharedConfigSchemaJSON returns meta.sharedConfigSchema as normalized JSON
+// text, nil when the plugin declares none.
+func (m Meta) SharedConfigSchemaJSON() json.RawMessage {
+	if m.SharedConfigSchema == nil {
+		return nil
+	}
+	return slices.Clone(m.SharedConfigSchema.text)
+}
+
 // ConfigURLHosts returns the host, with its port when it has one, of every
 // non-empty url format value of an instance config: the hosts utils.fetch may
 // address besides meta.allowedHosts. config is a validated config.
@@ -294,6 +303,82 @@ func (p *LoadedPlugin) ChannelConfigFor(stored json.RawMessage) json.RawMessage 
 // empty when it has no value.
 func ChannelConfigURL(config json.RawMessage, name string) string {
 	return strings.TrimSpace(gjson.GetBytes(config, gjson.Escape(name)).String())
+}
+
+// ValidateSharedConfig checks a request processing plugin's shared config
+// against meta.sharedConfigSchema and returns it with the defaults applied,
+// as every instance of the plugin reads it. Without a schema the result is
+// always {}.
+func (p *LoadedPlugin) ValidateSharedConfig(config json.RawMessage) (json.RawMessage, error) {
+	object, err := sharedConfigObject(config)
+	if err != nil {
+		return nil, err
+	}
+	schema := p.Meta.SharedConfigSchema
+	if schema == nil {
+		if len(object) > 0 {
+			return nil, fmt.Errorf("plugin %s takes no shared config; shared config must be {}", p.Meta.Key)
+		}
+		return json.RawMessage("{}"), nil
+	}
+	value, err := schema.root.validate(object, "shared_config")
+	if err != nil {
+		return nil, err
+	}
+	return common.Marshal(value)
+}
+
+// SharedConfigFor returns a plugin's shared config as its hooks get it: the
+// properties meta.sharedConfigSchema declares, with the defaults of absent
+// ones applied. A stored value the schema no longer accepts, after a plugin
+// update, reaches the plugin as stored; the next save checks it again.
+func (p *LoadedPlugin) SharedConfigFor(stored json.RawMessage) json.RawMessage {
+	schema := p.Meta.SharedConfigSchema
+	if schema == nil {
+		return json.RawMessage("{}")
+	}
+	object, err := sharedConfigObject(stored)
+	if err != nil {
+		object = map[string]any{}
+	}
+	for _, property := range *schema.root.Properties {
+		if _, present := object[property.name]; present || property.field.Default == nil {
+			continue
+		}
+		var item any
+		if common.Unmarshal(property.field.Default, &item) == nil {
+			object[property.name] = item
+		}
+	}
+	// validate normalizes url values in place; a rejected config keeps them
+	// as stored.
+	if encoded, err := common.Marshal(object); err == nil {
+		var checked map[string]any
+		if common.Unmarshal(encoded, &checked) == nil {
+			if value, validateErr := schema.root.validate(checked, "shared_config"); validateErr == nil {
+				if normalized, marshalErr := common.Marshal(value); marshalErr == nil {
+					return normalized
+				}
+			}
+		}
+		return encoded
+	}
+	return json.RawMessage("{}")
+}
+
+func sharedConfigObject(config json.RawMessage) (map[string]any, error) {
+	if len(bytes.TrimSpace(config)) == 0 || string(bytes.TrimSpace(config)) == "null" {
+		return map[string]any{}, nil
+	}
+	var value any
+	if err := common.Unmarshal(config, &value); err != nil {
+		return nil, fmt.Errorf("shared config must be a JSON object")
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("shared config must be a JSON object")
+	}
+	return object, nil
 }
 
 // hasAddress reports whether the schema has a top-level url property name.

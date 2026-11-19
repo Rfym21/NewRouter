@@ -1,7 +1,6 @@
 package channel
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -16,10 +15,10 @@ import (
 	common2 "new-router/common"
 	appconstant "new-router/constant"
 	"new-router/logger"
+	"new-router/pkg/requestpatch"
 	"new-router/relay/common"
 	"new-router/relay/constant"
 	"new-router/relay/helper"
-	"new-router/relay/simulation"
 	"new-router/relaykit/types"
 	"new-router/service"
 	"new-router/setting/operation_setting"
@@ -346,6 +345,73 @@ func ResolveHeaderOverride(info *common.RelayInfo, c *gin.Context, existingHeade
 	return processHeaderOverride(info, c, existingHeader)
 }
 
+// ApplyRequestPluginHeaders applies the header.patch effects of the current
+// attempt to an upstream header map. Adaptors that build and sign their own
+// request, such as the AWS SDK paths, call it before applying the channel's
+// header override. DoApiRequest gets the same effects from
+// ApplyHeaderOverride, which adds the channel override on top.
+func ApplyRequestPluginHeaders(info *common.RelayInfo, header http.Header) error {
+	if info == nil || len(info.RequestPluginHeaders) == 0 {
+		return nil
+	}
+	existingBetas := commaHeaderValues(header, pluginCommaHeaders...)
+	_, patched, err := requestpatch.Apply(nil, header, info.RequestPluginHeaders, common.IsRequestPluginProtectedHeader)
+	if err != nil {
+		return err
+	}
+	mergePluginCommaHeaders(patched, existingBetas)
+	for key := range header {
+		delete(header, key)
+	}
+	for key, values := range patched {
+		header[key] = values
+	}
+	return nil
+}
+
+// pluginCommaHeaders are the comma-separated capability headers a plugin's
+// patch extends instead of replacing: the adaptor and model settings may have
+// added tokens the plugin cannot read.
+var pluginCommaHeaders = []string{"anthropic-beta", "x-codex-beta-features"}
+
+func commaHeaderValues(header http.Header, names ...string) map[string]string {
+	values := make(map[string]string, len(names))
+	for _, name := range names {
+		if value := strings.TrimSpace(header.Get(name)); value != "" {
+			values[name] = value
+		}
+	}
+	return values
+}
+
+func mergePluginCommaHeaders(header http.Header, existing map[string]string) {
+	for name, value := range existing {
+		if added := strings.TrimSpace(header.Get(name)); added != "" {
+			header.Set(name, mergeCommaHeaderValues(value, added))
+		}
+	}
+}
+
+func mergeCommaHeaderValues(existing, added string) string {
+	parts := make([]string, 0, 8)
+	seen := make(map[string]struct{})
+	for _, list := range []string{existing, added} {
+		for _, item := range strings.Split(list, ",") {
+			part := strings.TrimSpace(item)
+			if part == "" {
+				continue
+			}
+			key := strings.ToLower(part)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 // ApplyHeaderOverride applies the request plugins' header changes, then the
 // channel overrides, after the adaptor's headers. Without a client request,
 // only static values and {api_key} are resolved.
@@ -361,6 +427,7 @@ func ApplyHeaderOverride(info *common.RelayInfo, c *gin.Context, req *http.Reque
 	// The outbound stage refused protected and credential header names; a
 	// header that carries the channel key is a credential too and stays as
 	// the adaptor set it.
+	existingBetas := commaHeaderValues(req.Header, pluginCommaHeaders...)
 	pluginValues := map[string][]string{}
 	for _, effect := range info.RequestPluginHeaders {
 		for _, name := range effect.Remove {
@@ -378,6 +445,7 @@ func ApplyHeaderOverride(info *common.RelayInfo, c *gin.Context, req *http.Reque
 			pluginValues[strings.ToLower(name)] = nil
 		}
 	}
+	mergePluginCommaHeaders(req.Header, existingBetas)
 	for name := range pluginValues {
 		pluginValues[name] = req.Header.Values(name)
 	}
@@ -424,10 +492,6 @@ func signUpstreamRequest(adaptor any, c *gin.Context, info *common.RelayInfo, me
 }
 
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
-	requestBody, err := applySimulationBody(info, requestBody)
-	if err != nil {
-		return nil, err
-	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -443,9 +507,6 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	// Apply client fingerprint headers before administrator overrides so an
-	// explicit channel header rule always wins.
-	simulation.ApplyHeaders(info, &headers)
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	if err = ApplyHeaderOverride(info, c, req); err != nil {
@@ -459,24 +520,6 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
-}
-
-// applySimulationBody rewrites JSON request bodies for channel-level client
-// emulation. It reads only when a simulation applies, and returns a bytes.Reader
-// so net/http still derives ContentLength and GetBody for transport retries.
-func applySimulationBody(info *common.RelayInfo, requestBody io.Reader) (io.Reader, error) {
-	if requestBody == nil || !simulation.NeedsBodyRewrite(info) {
-		return requestBody, nil
-	}
-	body, err := service.ReadBufferedResponseBody(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("read request body for simulation failed: %w", err)
-	}
-	body, err = simulation.ApplyBody(info, body)
-	if err != nil {
-		return nil, fmt.Errorf("apply request simulation failed: %w", err)
-	}
-	return bytes.NewReader(body), nil
 }
 
 func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
@@ -541,7 +584,9 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
-	simulation.ApplyHeaders(info, &targetHeader)
+	if err := ApplyRequestPluginHeaders(info, targetHeader); err != nil {
+		return nil, err
+	}
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
 	headerOverride, err := processHeaderOverride(info, c, targetHeader)

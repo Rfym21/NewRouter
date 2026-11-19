@@ -85,6 +85,8 @@ export type TaskPluginMeta = {
   }[]
   /** The schema of a request processing instance's config. */
   configSchema?: RequestPluginConfigSchema
+  /** The schema of the settings every instance of the plugin shares. */
+  sharedConfigSchema?: RequestPluginConfigSchema | null
   /** The models and channel types a request processing plugin is made for. */
   scope?: { models?: string[] | null; channelTypes?: number[] | null } | null
 }

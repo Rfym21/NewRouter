@@ -123,6 +123,8 @@ export type TaskPluginOption = {
   /** The models and channel types the plugin is made for, if it names them. */
   scope?: { models?: string[] | null; channelTypes?: number[] | null } | null
   configSchema?: RequestPluginConfigSchema
+  /** The settings every instance of the plugin shares, read as ctx.shared. */
+  sharedConfigSchema?: RequestPluginConfigSchema | null
   /** Requests the plugin offers for trying it out. */
   samples?: RequestPluginSample[] | null
   /** The settings a channel of the plugin takes, kept in its settings. */

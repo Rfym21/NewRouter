@@ -324,9 +324,13 @@ type Call struct {
 	// client body before the attempt is priced, so billing fields may change.
 	Unpriced bool
 	Attempt  int
+	Stream   bool
 	User     jsplugin.TransformUser
 	// Token is nil when the request has none.
 	Token *jsplugin.TransformToken
+	// Client is the incoming client's own fingerprint, read from the request
+	// before any adaptor header replaced it.
+	Client *jsplugin.TransformClient
 	// Effort is the reasoning effort the client or an @ model modifier set,
 	// which a reasoning.set without override leaves; request stage only.
 	Effort string
@@ -516,12 +520,17 @@ func (p *Plan) runInstance(ctx context.Context, call Call, instance *request_plu
 		Group:         call.Group,
 		Channel:       call.Channel,
 		Attempt:       call.Attempt,
+		Stream:        call.Stream,
 		User:          call.User,
 		Token:         call.Token,
 		Instance:      jsplugin.TransformInstance{ID: instance.ID, Name: instance.Name},
 		// Saving the instance validated its config and applied the defaults.
 		Config: instance.Config,
-		Media:  attachments,
+		// The plugin-level config is shared by every instance of the plugin
+		// and is read with its schema defaults applied.
+		SharedConfig: plugin.SharedConfigFor(request_plugin_setting.GetSharedConfig(instance.Plugin)),
+		Client:       call.Client,
+		Media:        attachments,
 	}, request)
 	if err != nil {
 		class := jsplugin.TransformErrorFailed

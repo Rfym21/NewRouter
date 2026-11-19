@@ -388,6 +388,9 @@ func InitResources() error {
 		if err := service.MigrateAnonymizationPolicy(); err != nil {
 			common.SysError(common.LogText("failed to migrate anonymization policy: %s", err.Error()))
 		}
+		if err := service.MigrateSimulationPlugins(); err != nil {
+			common.SysError(common.LogText("failed to migrate simulation plugins: %s", err.Error()))
+		}
 	}
 
 	// 清理旧的磁盘缓存文件

@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"new-router/pkg/requestpatch"
 	"new-router/relay/channel/requestrepair"
 	relaycommon "new-router/relay/common"
 	"new-router/relaykit/dto"
@@ -403,4 +404,26 @@ func TestToWebSocketURL(t *testing.T) {
 	} {
 		assert.Equal(t, want, toWebSocketURL(input), input)
 	}
+}
+
+func TestApplyRequestPluginHeadersMergesCommaHeaders(t *testing.T) {
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+	info.RequestPluginHeaders = []requestpatch.Effect{{
+		Type: requestpatch.EffectHeaderPatch,
+		Set: map[string]string{
+			"anthropic-beta":        "sim-beta",
+			"x-codex-beta-features": "sim-feature",
+			"user-agent":            "codex-tui/1.0",
+		},
+	}}
+	header := http.Header{}
+	header.Set("anthropic-beta", "model-beta")
+	header.Set("x-codex-beta-features", "passthrough-feature")
+	header.Set("content-type", "application/json")
+
+	require.NoError(t, ApplyRequestPluginHeaders(info, header))
+	assert.Equal(t, "model-beta,sim-beta", header.Get("anthropic-beta"))
+	assert.Equal(t, "passthrough-feature,sim-feature", header.Get("x-codex-beta-features"))
+	assert.Equal(t, "codex-tui/1.0", header.Get("user-agent"))
+	assert.Equal(t, "application/json", header.Get("content-type"))
 }

@@ -56,6 +56,69 @@ func GetRequestPluginInstances(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"instances": instances})
 }
 
+// GetRequestPluginSharedConfigs returns the plugin-level configs every
+// instance of a plugin reads as ctx.shared. Only a root user may read them:
+// a shared config may hold the key of a service the root user set up.
+func GetRequestPluginSharedConfigs(c *gin.Context) {
+	common.ApiSuccess(c, gin.H{"shared_configs": request_plugin_setting.GetSharedConfigs()})
+}
+
+type requestPluginSharedConfigsRequest struct {
+	SharedConfigs map[string]json.RawMessage `json:"shared_configs"`
+}
+
+// UpdateRequestPluginSharedConfigs replaces the shared config of each plugin
+// given, after checking it against the plugin's meta.sharedConfigSchema. A
+// plugin left out keeps its saved shared config.
+func UpdateRequestPluginSharedConfigs(c *gin.Context) {
+	var request requestPluginSharedConfigsRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
+		return
+	}
+	normalized := make(map[string]json.RawMessage, len(request.SharedConfigs))
+	for key, raw := range request.SharedConfigs {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A shared config needs a plugin key"))
+			return
+		}
+		plugin, ok := jsplugin.DefaultRegistry.GetIgnoringMasterSwitch(key)
+		if !ok || !plugin.Meta.HasTransformPart() {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Plugin {{plugin}} is not installed or has no request processing hooks", map[string]any{"plugin": key}))
+			return
+		}
+		config, err := plugin.ValidateSharedConfig(raw)
+		if err != nil {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Plugin {{plugin}} has an invalid shared config: {{error}}", map[string]any{"plugin": key, "error": err.Error()}))
+			return
+		}
+		normalized[key] = config
+	}
+	// A save replaces the plugins it names and leaves the others as saved.
+	merged := request_plugin_setting.GetSharedConfigs()
+	if merged == nil {
+		merged = make(map[string]json.RawMessage, len(normalized))
+	}
+	for key, config := range normalized {
+		merged[key] = config
+	}
+	encoded, err := common.Marshal(merged)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if len(encoded) > maxRequestPluginOptionBytes {
+		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Request plugin settings must not exceed {{max}} bytes", map[string]any{"max": maxRequestPluginOptionBytes}))
+		return
+	}
+	if err = model.UpdateOption(request_plugin_setting.SharedConfigsOption, string(encoded)); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"shared_configs": normalized})
+}
+
 // UpdateRequestPluginInstances replaces the instance list whole, in the order
 // given. Each config is saved as the plugin validated it, with its defaults.
 func UpdateRequestPluginInstances(c *gin.Context) {
@@ -230,6 +293,11 @@ type requestPluginDryRunRequest struct {
 	Body      json.RawMessage `json:"body"`
 	// Reply is an answer text to run the reply checks on.
 	Reply *string `json:"reply"`
+	// Client is the incoming client fingerprint the hooks read; nil runs as a
+	// client the host did not recognize.
+	Client *jsplugin.TransformClient `json:"client"`
+	// Stream reports whether the request asks for a streaming answer.
+	Stream bool `json:"stream"`
 	// Instance is an unsaved instance to run alone instead of the saved ones.
 	Instance *request_plugin_setting.Instance `json:"instance"`
 }
@@ -260,6 +328,8 @@ func DryRunRequestPlugins(c *gin.Context) {
 		Body:           request.Body,
 		ModifierEffort: helper.ModelModifierEffort(request.Model),
 		User:           jsplugin.TransformUser{ID: c.GetInt("id"), Username: c.GetString("username")},
+		Client:         request.Client,
+		Stream:         request.Stream,
 		Reply:          request.Reply,
 	}
 	if request.Instance != nil {

@@ -17,13 +17,15 @@ var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "
 
 // The built-in request processing plugins and the stage hooks each exports.
 var requestPluginHooks = map[string][]string{
-	"auto-reasoning":     {"request"},
-	"content-moderation": {"ingress", "reply"},
-	"image-compress":     {"outbound"},
-	"param-override":     {"outbound"},
-	"request-filter":     {"ingress", "egress", "reply"},
-	"request-redact":     {"ingress", "egress", "reply"},
-	"request-sensitive":  {"ingress"},
+	"auto-reasoning":         {"request"},
+	"claude-code-simulation": {"outbound"},
+	"codex-simulation":       {"outbound"},
+	"content-moderation":     {"ingress", "reply"},
+	"image-compress":         {"outbound"},
+	"param-override":         {"outbound"},
+	"request-filter":         {"ingress", "egress", "reply"},
+	"request-redact":         {"ingress", "egress", "reply"},
+	"request-sensitive":      {"ingress"},
 }
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
@@ -222,7 +224,8 @@ func TestBuiltInRequestPluginsExportTheirStageHooks(t *testing.T) {
 			assert.Equal(t, hooks, plugin.TransformHooks())
 			// A request may skip a failure only of the plugins whose work is
 			// an improvement, never of a policy or a configured override.
-			assert.Equal(t, key == "auto-reasoning" || key == "image-compress", plugin.Meta.Optional)
+			assert.Equal(t, key == "auto-reasoning" || key == "image-compress" ||
+				key == "claude-code-simulation" || key == "codex-simulation", plugin.Meta.Optional)
 			assert.False(t, plugin.Engine.HasExport("buildSubmitRequest"))
 			assert.Empty(t, plugin.Meta.Relay)
 			assert.NotEmpty(t, plugin.Meta.NameI18n["zh"])

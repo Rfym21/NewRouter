@@ -137,31 +137,6 @@ export interface ChannelSettings {
   tls_insecure_skip_verify?: boolean
 }
 
-export interface ClaudeCodeSimulationMetadata {
-  [key: string]: string
-  device_id: string
-  account_uuid: string
-  session_id: string
-}
-
-export interface ClaudeCodeSimulationConfig {
-  headers?: Record<string, string>
-  metadata?: ClaudeCodeSimulationMetadata
-  system?: unknown[]
-}
-
-/** Primitive turn metadata; the backend serializes it into Codex headers. */
-export interface CodexSimulationMetadata {
-  [key: string]: string | number | boolean | undefined
-  session_id?: string
-}
-
-export interface CodexSimulationConfig {
-  headers?: Record<string, string>
-  metadata?: CodexSimulationMetadata
-  system?: unknown[]
-}
-
 export interface ChannelOtherSettings {
   azure_responses_version?: string
   vertex_key_type?: 'json' | 'api_key'
@@ -203,14 +178,6 @@ export interface ChannelOtherSettings {
   cache_read_min_ratio?: number
   /** Two-stage thinking/signature strip-and-retry on >=400 (Claude upstreams). */
   thinking_signature_rectifier_enabled?: boolean
-  /** Full Claude Code CLI request simulation (Anthropic Messages-capable channels). */
-  claude_code_simulation_enabled?: boolean
-  /** Configurable Claude Code request fingerprint; omitted fields use backend defaults. */
-  claude_code_simulation?: ClaudeCodeSimulationConfig
-  /** Full Codex CLI request simulation (OpenAI Responses-capable channels). */
-  codex_simulation_enabled?: boolean
-  /** Configurable Codex request fingerprint; omitted fields use backend defaults. */
-  codex_simulation?: CodexSimulationConfig
   /** Strip encrypted reasoning items and replay once on verification errors (OpenAI/Azure Responses). */
   responses_encrypted_content_rectifier_enabled?: boolean
   /** The values of the bound plugin's channel settings (type 61). */
